@@ -73,14 +73,20 @@ enum class MutationOutcome {
 }
 
 @Serializable
+data class SyncDelta(
+    val documents: SyncDocuments,
+    val removedRecordingIds: List<String>,
+)
+
+@Serializable
 data class SyncResponse(
     val protocolVersion: Int,
     val currentRevision: Long,
     val nextCursor: Long,
     val hasMore: Boolean,
-    val changes: SyncDocuments,
+    val changes: SyncDelta,
     val acknowledgements: List<MutationAcknowledgement>,
-    val removedRecordingIds: List<String>,
+    val reconciliation: SyncDelta,
 )
 
 fun requireSupportedSyncProtocolVersion(protocolVersion: Int) {

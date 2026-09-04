@@ -74,24 +74,57 @@ class SelfHostedSyncProtocolTest {
     }
 
     @Test
-    fun responseRoundTripsEveryAcknowledgementOutcome() {
+    fun nonAcceptedMutationsCarryAuthoritativeStateOutsideCursorChanges() {
+        val nonAcceptedOutcomes = MutationOutcome.entries.filterNot { it == MutationOutcome.Accepted }
+        val acknowledgements = MutationKind.entries.flatMap { kind ->
+            nonAcceptedOutcomes.map { outcome ->
+                MutationAcknowledgement(
+                    kind = kind,
+                    id = mutationId(kind, outcome),
+                    outcome = outcome,
+                )
+            }
+        }
+        val reconciliation = SyncDelta(
+            documents = SyncDocuments(
+                recordings = acknowledgements.filter {
+                    it.kind == MutationKind.Recording ||
+                        it.kind == MutationKind.RecordingDeletion &&
+                        it.outcome != MutationOutcome.AlreadyCurrent
+                }.map { documents.recordings.single().copy(id = it.id) },
+                items = acknowledgements.filter { it.kind == MutationKind.Item }
+                    .map { documents.items.single().copy(id = it.id) },
+                lists = acknowledgements.filter { it.kind == MutationKind.List }
+                    .map { documents.lists.single().copy(id = it.id) },
+            ),
+            removedRecordingIds = acknowledgements.filter {
+                it.kind == MutationKind.RecordingDeletion &&
+                    it.outcome == MutationOutcome.AlreadyCurrent
+            }.map { it.id },
+        )
         val response = SyncResponse(
             protocolVersion = SELF_HOSTED_SYNC_PROTOCOL_VERSION,
             currentRevision = 50,
             nextCursor = 47,
             hasMore = true,
-            changes = documents,
-            acknowledgements = MutationOutcome.entries.mapIndexed { index, outcome ->
-                MutationAcknowledgement(
-                    kind = MutationKind.entries[index],
-                    id = "mutation-$index",
-                    outcome = outcome,
-                )
-            },
-            removedRecordingIds = listOf("removed-recording-id"),
+            changes = SyncDelta(
+                documents = SyncDocuments(emptyList(), emptyList(), emptyList()),
+                removedRecordingIds = emptyList(),
+            ),
+            acknowledgements = acknowledgements,
+            reconciliation = reconciliation,
         )
 
         assertEquals(response, json.decodeFromString(json.encodeToString(response)))
+        assertEquals(
+            acknowledgements.map { it.id }.toSet(),
+            buildSet {
+                addAll(reconciliation.documents.recordings.map { it.id })
+                addAll(reconciliation.documents.items.map { it.id })
+                addAll(reconciliation.documents.lists.map { it.id })
+                addAll(reconciliation.removedRecordingIds)
+            },
+        )
     }
 
     @Test
@@ -117,4 +150,7 @@ class SelfHostedSyncProtocolTest {
             requireSupportedSyncProtocolVersion(SELF_HOSTED_SYNC_PROTOCOL_VERSION + 1)
         }
     }
+
+    private fun mutationId(kind: MutationKind, outcome: MutationOutcome): String =
+        "${kind.name}-${outcome.name}"
 }
