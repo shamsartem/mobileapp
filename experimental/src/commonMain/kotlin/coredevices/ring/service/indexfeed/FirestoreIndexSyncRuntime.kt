@@ -18,15 +18,12 @@ import coredevices.ring.encryption.DocumentEncryptor
 import coredevices.ring.service.RecordingBackgroundScope
 import coredevices.ring.util.trace.TraceSessionExporter
 import dev.gitlive.firebase.Firebase
-import dev.gitlive.firebase.auth.FirebaseUser
 import dev.gitlive.firebase.auth.auth
 import dev.gitlive.firebase.firestore.QuerySnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -47,14 +44,11 @@ import kotlin.time.Clock
 import kotlin.time.Instant
 
 class FirestoreIndexSyncRuntime(
-    private val indexFeedSyncService: IndexFeedSyncService,
     private val defaultListsBootstrap: DefaultListsBootstrap,
     private val recordingRepository: RecordingRepository,
     private val scope: RecordingBackgroundScope,
 ) : IndexSyncRuntime, KoinComponent {
     private val logger = Logger.withTag("FirestoreIndexSync")
-    private val accountState = MutableStateFlow(Firebase.auth.currentUser.toIndexSyncAccount())
-    override val account: StateFlow<IndexSyncAccount?> = accountState
 
     private val uploadingIds = mutableSetOf<Long>()
     private val uploadingIdsLock = Mutex()
@@ -70,6 +64,7 @@ class FirestoreIndexSyncRuntime(
     }
 
     override fun start() {
+        get<IndexFeedSyncService>()
         val preferences: Preferences = get()
         recordingRepository.getAllRecordings().drop(1).debounce(2000).onEach { recordings ->
             if (!preferences.backupEnabled.value) return@onEach
@@ -207,7 +202,6 @@ class FirestoreIndexSyncRuntime(
         authState()
             .distinctUntilChanged { old, new -> old?.uid == new?.uid }
             .onEach { user ->
-                accountState.value = user.toIndexSyncAccount()
                 if (user != null) {
                     try {
                         defaultListsBootstrap.ensure()
@@ -218,8 +212,6 @@ class FirestoreIndexSyncRuntime(
             }
             .launchIn(scope)
     }
-
-    override suspend fun syncNow() = indexFeedSyncService.syncNow()
 
     private fun authState() = flow {
         emit(Firebase.auth.currentUser)
@@ -294,9 +286,5 @@ class FirestoreIndexSyncRuntime(
             localId,
             Clock.System.now().toEpochMilliseconds(),
         )
-    }
-
-    private fun FirebaseUser?.toIndexSyncAccount(): IndexSyncAccount? = this?.let {
-        IndexSyncAccount(id = uid, email = email)
     }
 }

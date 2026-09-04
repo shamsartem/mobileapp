@@ -1,10 +1,7 @@
 package coredevices.ring.service.indexfeed
 
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlin.test.Test
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -37,17 +34,13 @@ class IndexSyncRuntimeTest {
         runtime.start()
 
         assertFalse(firestoreResolved)
-        assertNull(runtime.account.value)
     }
 
     private class FakeIndexSyncRuntime : IndexSyncRuntime {
-        override val account: StateFlow<IndexSyncAccount?> = MutableStateFlow(null)
         var started = false
 
         override fun start() {
             started = true
         }
-
-        override suspend fun syncNow() = Unit
     }
 }
