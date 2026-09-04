@@ -50,7 +50,11 @@ import coredevices.ring.reminders.ReminderCompleter
 import coredevices.ring.reminders.ReminderDeepLinkResolver
 import coredevices.ring.service.indexfeed.DefaultListsBootstrap
 import coredevices.ring.service.indexfeed.IndexFeedSyncService
+import coredevices.ring.service.indexfeed.FirestoreIndexSyncRuntime
+import coredevices.ring.service.indexfeed.IndexSyncRuntime
 import coredevices.ring.service.indexfeed.ItemFactory
+import coredevices.ring.service.indexfeed.SelfHostedIndexSyncRuntime
+import coredevices.ring.service.indexfeed.selectIndexSyncRuntime
 import coredevices.libindex.database.repository.RingTransferRepository
 import coredevices.ring.external.indexwebhook.IndexWebhookApi
 import coredevices.ring.external.indexwebhook.IndexWebhookApiImpl
@@ -185,6 +189,15 @@ val experimentalModule = module {
     singleOf(::ListRepository)
     singleOf(::DefaultListsBootstrap)
     singleOf(::IndexFeedSyncService)
+    singleOf(::FirestoreIndexSyncRuntime)
+    singleOf(::SelfHostedIndexSyncRuntime)
+    single<IndexSyncRuntime> {
+        selectIndexSyncRuntime(
+            backendUrl = BuildKonfig.SELF_HOSTED_BACKEND_URL,
+            firestore = { get<FirestoreIndexSyncRuntime>() },
+            selfHosted = { get<SelfHostedIndexSyncRuntime>() },
+        )
+    }
     singleOf(::ItemFactory)
     singleOf(::ReminderDeepLinkResolver)
     singleOf(::ReminderCompleter)

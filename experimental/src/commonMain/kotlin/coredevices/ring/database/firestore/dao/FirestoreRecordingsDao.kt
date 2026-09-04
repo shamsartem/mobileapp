@@ -2,6 +2,7 @@ package coredevices.ring.database.firestore.dao
 
 import coredevices.firestore.CollectionDao
 import coredevices.indexai.data.entity.RecordingDocument
+import coredevices.ring.data.IndexDocumentIds
 import dev.gitlive.firebase.firestore.Direction
 import dev.gitlive.firebase.firestore.DocumentReference
 import dev.gitlive.firebase.firestore.DocumentSnapshot
@@ -25,14 +26,7 @@ class FirestoreRecordingsDao(dbProvider: () -> FirebaseFirestore): CollectionDao
      *  haven't been uploaded yet. The gitlive CollectionReference doesn't
      *  expose Firestore's no-arg `document()` overload, so we generate the
      *  same shape here directly. */
-    fun newDocumentId(): String = buildString(20) {
-        repeat(20) { append(FIRESTORE_ID_ALPHABET.random()) }
-    }
-
-    companion object {
-        private val FIRESTORE_ID_ALPHABET: List<Char> =
-            ('A'..'Z') + ('a'..'z') + ('0'..'9')
-    }
+    fun newDocumentId(): String = IndexDocumentIds.newId()
 
     suspend fun addRecording(
         recording: RecordingDocument

@@ -275,6 +275,7 @@ buildkonfig {
     defaultConfigs {
         buildConfigField(FieldSpec.Type.STRING, "NENYA_URL", "https://nenya.repebble.com")
         buildConfigField(FieldSpec.Type.STRING, "NOTION_OAUTH_BACKEND_URL", "https://index-oauth.repebble.com")
+        buildConfigField(FieldSpec.Type.STRING, "SELF_HOSTED_BACKEND_URL", System.getenv("SELF_HOSTED_BACKEND_URL") ?: properties.getProperty("SELF_HOSTED_BACKEND_URL") ?: "")
 
         buildConfigField(FieldSpec.Type.STRING, "TESTS_NOTION_TOKEN", System.getenv("TESTS_NOTION_TOKEN") ?: properties.getProperty("TESTS_NOTION_TOKEN") ?: "")
     }

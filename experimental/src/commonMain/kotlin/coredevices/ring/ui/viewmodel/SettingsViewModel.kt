@@ -103,7 +103,6 @@ class SettingsViewModel(
     private val indexDeviceManager: IndexDeviceManager,
     private val itemRepository: coredevices.ring.database.room.repository.ItemRepository,
     private val listRepository: coredevices.ring.database.room.repository.ListRepository,
-    private val indexFeedSyncService: coredevices.ring.service.indexfeed.IndexFeedSyncService,
     private val platform: coredevices.util.Platform,
     private val mcpSandboxRepository: McpSandboxRepository,
     private val ringDelegate: RingDelegate,

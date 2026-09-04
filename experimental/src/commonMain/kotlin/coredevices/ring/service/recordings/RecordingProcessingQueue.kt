@@ -1,25 +1,17 @@
 package coredevices.ring.service.recordings
 
 import co.touchlab.kermit.Logger
-import coredevices.indexai.data.entity.ConversationMessageEntity
-import coredevices.indexai.data.entity.RecordingDocument
-import coredevices.indexai.data.entity.RecordingEntry
-import coredevices.indexai.data.entity.RecordingEntryEntity
 import coredevices.indexai.data.entity.RecordingEntryErrorType
 import coredevices.indexai.data.entity.RecordingEntryStatus
-import coredevices.indexai.database.dao.ConversationMessageDao
 import coredevices.indexai.database.dao.RecordingEntryDao
 import coredevices.ring.database.Preferences
-import coredevices.ring.encryption.DocumentEncryptor
 import coredevices.mcp.BuiltInMcpTool
 import coredevices.mcp.SessionContext
 import coredevices.mcp.data.ToolCallResult
-import coredevices.ring.database.firestore.dao.FirestoreRecordingsDao
-import coredevices.ring.database.firestore.dao.FirestoreTracesDao
-import coredevices.ring.util.trace.TraceSessionExporter
 import coredevices.ring.agent.builtin_servlets.notes.CreateNoteTool
 import coredevices.ring.agent.builtin_servlets.reminders.ReminderTool
 import coredevices.ring.agent.fallbackToolCall
+import coredevices.ring.data.IndexDocumentIds
 import coredevices.ring.data.ProcessingTask
 import coredevices.ring.data.RecordingProcessingTask
 import coredevices.ring.data.entity.room.TraceEventData
@@ -33,25 +25,8 @@ import coredevices.ring.service.recordings.button.RecordingOperationFactory
 import coredevices.ring.storage.RecordingStorage
 import coredevices.ring.util.trace.RingTraceSession
 import coredevices.util.queue.PersistentQueueScheduler
-import dev.gitlive.firebase.Firebase
-import dev.gitlive.firebase.auth.auth
-import dev.gitlive.firebase.firestore.QuerySnapshot
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.IO
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -82,301 +57,6 @@ class RecordingProcessingQueue(
 ) {
     companion object {
         private val logger = Logger.withTag("RecordingProcessingQueue")
-    }
-
-    // Best-effort guard against two concurrent emissions uploading the same
-    // recording. Correctness no longer depends on it (the live re-read below is
-    // idempotent); the lock just keeps the set from corrupting under concurrency.
-    private val uploadingIds = mutableSetOf<Long>()
-    private val uploadingIdsLock = Mutex()
-
-    private suspend fun inFlightSnapshot(): Set<Long> =
-        uploadingIdsLock.withLock { uploadingIds.toSet() }
-
-    /** Atomically claims [id]; returns false if an upload is already in flight. */
-    private suspend fun tryBeginUpload(id: Long): Boolean =
-        uploadingIdsLock.withLock { uploadingIds.add(id) }
-
-    /** Releases [id]. NonCancellable so scope teardown can't skip the release. */
-    private suspend fun finishUpload(id: Long) = withContext(NonCancellable) {
-        uploadingIdsLock.withLock { uploadingIds.remove(id) }
-    }
-
-    init {
-        // Observe local recordings and sync to Firestore. Mirrors the old RingService
-        // logic: on every emission, for each LocalRecording either (a) upload if it has
-        // no firestoreId, or (b) fetch the remote doc and compare `updated` timestamps,
-        // re-uploading when the local copy is newer. This catches incremental updates
-        // (entries/messages added after the initial row was created), which the
-        // firestoreId-only filter silently dropped.
-        val preferences: Preferences = get()
-        recordingRepository.getAllRecordings().drop(1).debounce(2000).onEach { recordings ->
-            if (!preferences.backupEnabled.value) return@onEach
-            val firestoreRecordingsDao: FirestoreRecordingsDao = get()
-            val recordingEntryDao: RecordingEntryDao = get()
-            val conversationMessageDao: ConversationMessageDao = get()
-
-            // Skip pure placeholders. A row with zero entries hasn't
-            // produced any user-visible content
-            val recordingsWithEntries = recordingEntryDao
-                .getRecordingIdsWithEntries()
-                .toHashSet()
-
-            val inFlight = inFlightSnapshot()
-            // Pure-local dirty check — no per-row Firestore read (that didn't
-            // scale to thousands of rows). Push when the row changed since our
-            // last successful push. The cloud→local listener pins both
-            // `updated` and `lastPushedUpdated` to remote on ingest, so rows
-            // merely behind remote aren't seen as dirty.
-            val needsPush = recordings.filter { localRecording ->
-                if (localRecording.id in inFlight) return@filter false
-                if (localRecording.id !in recordingsWithEntries) return@filter false
-                val watermark = localRecording.lastPushedUpdated
-                watermark == null || localRecording.updated.toEpochMilliseconds() > watermark
-            }
-            if (needsPush.isEmpty()) return@onEach
-            logger.i { "Found ${needsPush.size} local recordings to push" }
-
-            for (localRecording in needsPush) {
-                if (!tryBeginUpload(localRecording.id)) continue // already in-flight
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        val entries = recordingEntryDao.getEntriesForRecording(localRecording.id).first()
-                        val messages = conversationMessageDao.getMessagesForRecording(localRecording.id).first()
-                        var doc = localRecording.toDocument(
-                            entries = entries.map {
-                                RecordingEntry(
-                                    timestamp = it.timestamp,
-                                    fileName = it.fileName,
-                                    status = it.status,
-                                    transcription = it.transcription,
-                                    transcribedUsingModel = it.transcribedUsingModel,
-                                    error = it.error,
-                                    errorType = it.errorType,
-                                    ringTransferInfo = it.ringTransferInfo,
-                                    userMessageId = it.userMessageId
-                                )
-                            },
-                            messages = messages.map { it.document },
-                        )
-                        if (preferences.useEncryption.value) {
-                            val encryptor: DocumentEncryptor = get()
-                            val key = encryptor.getKey()
-                            if (key != null) {
-                                doc = encryptor.encryptDocument(doc, key)
-                                logger.i { "Encrypted recording ${localRecording.id} before upload" }
-                            } else {
-                                logger.w { "Encryption enabled but no key available — uploading unencrypted" }
-                            }
-                        }
-                        // firestoreId is pre-allocated at createRecording
-                        // time, so we always have a stable id and can use
-                        // idempotent set() instead of addRecording().
-                        // Legacy rows with null firestoreId fall back to
-                        // the old create-doc path.
-                        val existingFirestoreId = localRecording.firestoreId
-                        val firestoreRecordingId = if (existingFirestoreId == null) {
-                            val newId = firestoreRecordingsDao.newDocumentId()
-                            recordingRepository.updateRecordingFirestoreId(localRecording.id, newId)
-                            firestoreRecordingsDao.setRecording(newId, doc)
-                            logger.i { "Uploaded recording ${localRecording.id} → $newId" }
-                            newId
-                        } else {
-                            firestoreRecordingsDao.setRecording(existingFirestoreId, doc)
-                            logger.i { "Pushed recording ${localRecording.id} → $existingFirestoreId" }
-                            existingFirestoreId
-                        }
-                        // Watermark the version we just pushed so this row
-                        // isn't rescanned as dirty until it changes again.
-                        recordingRepository.setLastPushedUpdated(
-                            localRecording.id,
-                            localRecording.updated.toEpochMilliseconds(),
-                        )
-                        val isFinal = entries.isNotEmpty() && entries.all {
-                            it.status == RecordingEntryStatus.completed || it.status.isError()
-                        }
-                        if (isFinal) {
-                            try {
-                                val exporter: TraceSessionExporter = get()
-                                val sessions = exporter.exportForRecording(localRecording.id)
-                                if (sessions.isNotEmpty()) {
-                                    val firestoreTracesDao: FirestoreTracesDao = get()
-                                    firestoreTracesDao.setTrace(firestoreRecordingId, sessions)
-                                    logger.i { "Uploaded trace (${sessions.size} sessions) for recording ${localRecording.id} → $firestoreRecordingId" }
-                                }
-                            } catch (e: Exception) {
-                                logger.e(e) { "Error uploading trace for recording ${localRecording.id}" }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        logger.e(e) { "Error uploading recording ${localRecording.id} to Firestore" }
-                    } finally {
-                        finishUpload(localRecording.id)
-                    }
-                }
-            }
-        }.flowOn(Dispatchers.IO).catch {
-            logger.e(it) { "Error in local recording upload observer" }
-        }.launchIn(scope)
-
-        // Cloud → Local recording auto-pull. Symmetric to the upload
-        // observer above and to IndexFeedSyncService for items+lists:
-        // a fresh device that signs in (or any device that comes back
-        // online) sees every Firestore recording mirrored into Room
-        // without the user having to tap Sync now. Auth-gated through
-        // [authStateChanged] because FirestoreRecordingsDao throws if
-        // accessed unauthenticated, and this singleton is constructed
-        // eagerly at app start. flatMapLatest cancels the inner snapshot
-        // listener on sign-out and resubscribes on sign-in.
-        @OptIn(ExperimentalCoroutinesApi::class)
-        flow {
-            emit(Firebase.auth.currentUser)
-            Firebase.auth.authStateChanged.collect { emit(it) }
-        }.flatMapLatest { user ->
-            val firestoreRecordingsDao: FirestoreRecordingsDao = get()
-            if (user == null) flow<QuerySnapshot> {} else firestoreRecordingsDao.changesFlow()
-        }.onEach { snap ->
-            if (!preferences.backupEnabled.value) return@onEach
-            // Walk every doc in the snapshot. ingestRemoteRecording
-            // internally compares remote.updated vs local.updated and
-            // no-ops when local is at-or-newer, so this path is
-            // idempotent. Includes both new docs (no local row) and
-            // remote-newer updates from other devices.
-            var ingested = 0
-            for (doc in snap.documents) {
-                try {
-                    val before = recordingRepository.getByFirestoreId(doc.id)
-                    ingestRemoteRecording(doc.id, doc.data<RecordingDocument>())
-                    val after = recordingRepository.getByFirestoreId(doc.id)
-                    if (before == null || (after != null && after.updated != before.updated)) {
-                        ingested++
-                    }
-                } catch (e: Exception) {
-                    logger.w(e) { "auto-pull: skip ${doc.id}: ${e.message}" }
-                }
-            }
-            // Process REMOVED events so hard deletes from Firestore
-            // (dedup cleanup, Firebase Console, another client) propagate
-            // to local Room. Without this branch, the local row stays
-            // and the upload observer re-creates the deleted Firestore
-            // doc via `setRecording(deletedId, doc)` on its next emit
-            // — undoing the cleanup. Mirrors what IndexFeedSyncService
-            // already does for items / lists.
-            var removed = 0
-            for (change in snap.documentChanges) {
-                if (change.type != dev.gitlive.firebase.firestore.ChangeType.REMOVED) continue
-                val id = change.document.id
-                val local = recordingRepository.getByFirestoreId(id) ?: continue
-                try {
-                    recordingRepository.deleteRecording(local.id)
-                    removed++
-                } catch (e: Exception) {
-                    logger.w(e) { "auto-pull: failed to delete local ${local.id} for removed firestoreId $id: ${e.message}" }
-                }
-            }
-            if (ingested > 0 || removed > 0) {
-                logger.i { "auto-pull: ingested=$ingested removed=$removed" }
-            }
-        }.flowOn(Dispatchers.IO).catch {
-            logger.e(it) { "Error in remote recording pull observer" }
-        }.launchIn(scope)
-    }
-
-    /** Mirror a single remote [RecordingDocument] into Room. Handles
-     *  three cases:
-     *
-     *    1. Recording isn't local yet → create + populate children.
-     *    2. Local copy is older than remote → wipe-and-replace children,
-     *       overwrite mutable LocalRecording fields, pin `updated` to
-     *       remote.
-     *    3. Local copy is at-or-newer than remote → no-op.
-     *
-     *  Decrypts the document first if it carries an encrypted envelope.
-     *  Public so [coredevices.ring.ui.viewmodel.SettingsViewModel]'s
-     *  manual sync can share the same code path as the auto-pull
-     *  snapshot listener — single source of truth for "ingest a remote
-     *  recording into Room." */
-    suspend fun ingestRemoteRecording(firestoreId: String, document: RecordingDocument) {
-        val recordingEntryDao: RecordingEntryDao = get()
-        val conversationMessageDao: ConversationMessageDao = get()
-        val encryptor: DocumentEncryptor = get()
-
-        var recording = document
-        if (recording.encrypted != null) {
-            val key = encryptor.getKey()
-            if (key != null) {
-                recording = encryptor.decryptDocument(recording, key)
-            } else {
-                logger.w { "Encrypted recording $firestoreId but no key — storing encrypted" }
-            }
-        }
-
-        val existing = recordingRepository.getByFirestoreId(firestoreId)
-        if (existing != null && recording.updated <= existing.updated.toEpochMilliseconds()) {
-            // Local is up-to-date or newer; the upload observer will
-            // push our copy back if needed.
-            return
-        }
-
-        val localId = if (existing != null) {
-            // Update existing row's mutable fields and wipe children
-            // before reinsert. Wrapped in their own DAO transactions; the
-            // outer call here doesn't need to be transactional because
-            // any partial failure would re-trigger the same path on the
-            // next snapshot fire (idempotent on (firestoreId, updated)).
-            recordingRepository.updateRecording(
-                existing.copy(
-                    localTimestamp = recording.timestamp,
-                    assistantTitle = recording.assistantSession?.title,
-                    updated = Instant.fromEpochMilliseconds(recording.updated),
-                )
-            )
-            recordingEntryDao.deleteAllForRecording(existing.id)
-            conversationMessageDao.deleteAllForRecording(existing.id)
-            existing.id
-        } else {
-            recordingRepository.createRecording(
-                firestoreId = firestoreId,
-                localTimestamp = recording.timestamp,
-                assistantTitle = recording.assistantSession?.title,
-                updated = recording.updated,
-            )
-        }
-        if (recording.entries.isNotEmpty()) {
-            recordingEntryDao.insertRecordingEntries(
-                recording.entries.map { entry ->
-                    RecordingEntryEntity(
-                        recordingId = localId,
-                        timestamp = entry.timestamp,
-                        fileName = entry.fileName,
-                        status = entry.status,
-                        transcription = entry.transcription,
-                        transcribedUsingModel = entry.transcribedUsingModel,
-                        error = entry.error,
-                        errorType = entry.errorType,
-                        ringTransferInfo = entry.ringTransferInfo,
-                        userMessageId = entry.userMessageId,
-                    )
-                }
-            )
-        }
-        recording.assistantSession?.messages?.takeIf { it.isNotEmpty() }?.let { messages ->
-            conversationMessageDao.insertMessages(
-                messages.map { ConversationMessageEntity(recordingId = localId, document = it) }
-            )
-        }
-        // Pin updated to remote value — the entry/message inserts auto-
-        // bumped `updated` to now() which would round-trip back as a
-        // re-upload via the push observer.
-        recordingRepository.setRecordingUpdated(
-            localId,
-            Instant.fromEpochMilliseconds(recording.updated),
-        )
-        // Watermark to now
-        recordingRepository.setLastPushedUpdated(
-            localId,
-            Clock.System.now().toEpochMilliseconds(),
-        )
     }
 
     override suspend fun processTask(task: RecordingProcessingTask) {
@@ -468,9 +148,8 @@ class RecordingProcessingQueue(
         val recordingId = if (handle.stage is RecordingProcessingStage.RecordingEntityCreated) {
             (handle.stage as RecordingProcessingStage.RecordingEntityCreated).recordingEntityId
         } else {
-            val firestoreRecordingsDao: FirestoreRecordingsDao = get()
             val id = recordingRepository.createRecording(
-                firestoreId = firestoreRecordingsDao.newDocumentId(),
+                firestoreId = IndexDocumentIds.newId(),
             )
             handle.updateStage(
                 RecordingProcessingStage.RecordingEntityCreated(id)
@@ -502,9 +181,8 @@ class RecordingProcessingQueue(
             ))
             res
         } else {
-            val firestoreRecordingsDao: FirestoreRecordingsDao = get()
             val id = recordingRepository.createRecording(
-                firestoreId = firestoreRecordingsDao.newDocumentId(),
+                firestoreId = IndexDocumentIds.newId(),
                 localTimestamp = transfer.transferInfo?.buttonPressed?.let { Instant.fromEpochMilliseconds(it) } ?: task.created
             )
             queueTaskRepository.updateTaskRecordingId(
@@ -545,9 +223,8 @@ class RecordingProcessingQueue(
         val recordingId = if (handle.stage is RecordingProcessingStage.RecordingEntityCreated) {
             (handle.stage as RecordingProcessingStage.RecordingEntityCreated).recordingEntityId
         } else {
-            val firestoreRecordingsDao: FirestoreRecordingsDao = get()
             val id = recordingRepository.createRecording(
-                firestoreId = firestoreRecordingsDao.newDocumentId(),
+                firestoreId = IndexDocumentIds.newId(),
             )
             handle.updateStage(
                 RecordingProcessingStage.RecordingEntityCreated(id)
