@@ -11,10 +11,12 @@ import coredevices.ring.database.room.RingDatabase
 import coredevices.ring.BuildKonfig
 import coredevices.ring.selfhosted.sync.RecordingDeletionMutation
 import coredevices.ring.selfhosted.sync.SelfHostedSyncState
+import coredevices.ring.selfhosted.visibleRecordings
 import co.touchlab.kermit.Logger
 import coredevices.ring.service.RecordingBackgroundScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
@@ -53,6 +55,16 @@ class RecordingRepository(
 
     fun getAllRecordings() =
         localRecordingDao.getAllRecordings()
+
+    /** Display only; sync, retries and backups must retain all recording rows. */
+    fun getDisplayRecordings() = if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) {
+        getAllRecordings()
+    } else combine(
+        getAllRecordings(), recordingEntryDao.getAllEntriesFlow(),
+        db.recordingProcessingTaskDao().getPendingRecordingIdsFlow(),
+    ) { recordings, entries, pending ->
+        visibleRecordings(recordings, entries, pending)
+    }
 
     suspend fun getMostRecentTimestamp(): LocalRecording? =
         localRecordingDao.getMostRecentTimestamp()

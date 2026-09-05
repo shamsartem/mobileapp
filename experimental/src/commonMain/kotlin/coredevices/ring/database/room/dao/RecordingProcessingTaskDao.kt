@@ -22,6 +22,9 @@ interface RecordingProcessingTaskDao {
     @Query("SELECT * FROM RecordingProcessingTaskEntity WHERE status = 'Pending' ORDER BY created ASC")
     suspend fun getPendingTasks(): List<RecordingProcessingTaskEntity>
 
+    @Query("SELECT DISTINCT recordingId FROM RecordingProcessingTaskEntity WHERE status = 'Pending' AND recordingId IS NOT NULL")
+    fun getPendingRecordingIdsFlow(): Flow<List<Long>>
+
     @Query("UPDATE RecordingProcessingTaskEntity SET lastSuccessfulStage = :stage WHERE id = :taskId")
     suspend fun updateLastSuccessfulStage(taskId: Long, stage: String)
 

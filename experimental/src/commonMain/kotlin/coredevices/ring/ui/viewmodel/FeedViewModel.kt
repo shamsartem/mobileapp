@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.cachedIn
+import androidx.paging.filter
 import androidx.paging.insertSeparators
 import androidx.paging.map
 import co.touchlab.kermit.Logger
@@ -19,8 +20,11 @@ import coredevices.libindex.database.dao.RingTransferDao
 import coredevices.libindex.database.repository.RingTransferRepository
 import coredevices.libindex.di.LibIndexCoroutineScope
 import coredevices.ring.service.recordings.RecordingProcessingQueue
+import coredevices.ring.database.room.repository.RecordingRepository
+import coredevices.ring.BuildKonfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -40,6 +44,7 @@ class FeedViewModel(
     private val ringTransferDao: RingTransferDao,
     private val recordingProcessingQueue: RecordingProcessingQueue,
     private val appScope: LibIndexCoroutineScope,
+    recordingRepo: RecordingRepository,
 ): ViewModel() {
     companion object {
         private val logger = Logger.withTag(FeedViewModel::class.simpleName!!)
@@ -58,7 +63,13 @@ class FeedViewModel(
     val items = Pager(
         config = PagingConfig(pageSize = FEED_ITEMS_QUERY_LIMIT, enablePlaceholders = false),
         pagingSourceFactory = { transferRepo.getPaginatedTransfersWithFeedItem() }
-    ).flow.map { data ->
+    ).flow.let { pages ->
+        if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) pages
+        else pages.cachedIn(viewModelScope).combine(recordingRepo.getDisplayRecordings()) { data, recordings ->
+            val visibleIds = recordings.mapTo(mutableSetOf()) { it.id }
+            data.filter { it.feedItem == null || it.feedItem!!.id in visibleIds }
+        }
+    }.map { data ->
         data
             .map {
                 if (it.feedItem != null) {

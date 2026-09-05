@@ -78,7 +78,7 @@ class IndexFeedViewModel(
      */
     val state: StateFlow<UiState> = combine(
         combine(
-            recordingRepo.getAllRecordings(),
+            recordingRepo.getDisplayRecordings(),
             itemRepo.getAllFlow(),
             listRepo.getAllFlow(),
             recordingRepo.getAllEntriesFlow(),
