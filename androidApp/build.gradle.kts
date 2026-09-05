@@ -50,6 +50,8 @@ android {
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders["pebbleTelemetryEnabled"] =
+            (System.getenv("SELF_HOSTED_BACKEND_URL") ?: properties.getProperty("SELF_HOSTED_BACKEND_URL") ?: "").isBlank()
         ndk {
             //noinspection ChromeOsAbiSupport
             abiFilters += setOf("armeabi-v7a", "arm64-v8a")

@@ -41,7 +41,7 @@ fun App() {
         }
         Box(Modifier.fillMaxSize().dismissKeyboardOnTapOutside()) {
             AppNavHost(navHostController, startDestination)
-            SttModelUpdatePrompt()
+            if (coredevices.ring.BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) SttModelUpdatePrompt()
         }
     }
 }

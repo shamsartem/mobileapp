@@ -275,6 +275,7 @@ val properties = Properties().apply {
 
 buildkonfig {
     packageName = "coredevices.ring"
+    exposeObjectWithName = "BuildKonfig"
     defaultConfigs {
         buildConfigField(FieldSpec.Type.STRING, "NENYA_URL", "https://nenya.repebble.com")
         buildConfigField(FieldSpec.Type.STRING, "NOTION_OAUTH_BACKEND_URL", "https://index-oauth.repebble.com")

@@ -4,6 +4,8 @@ import CoreNav
 import NoOpCoreNav
 import PlatformUiContext
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +52,10 @@ import com.russhwolf.settings.set
 import coreapp.composeapp.generated.resources.Res
 import coreapp.composeapp.generated.resources.pebble_logo
 import coredevices.pebble.ui.PebbleRoutes
+import coredevices.pebble.PebbleDeepLinkHandler
+import coredevices.pebble.ui.PebbleNavBarRoutes
+import coredevices.ring.BuildKonfig
+import coredevices.ring.selfhosted.ui.SelfHostedIndexSettings
 import coredevices.pebble.ui.PreviewWrapper
 import coredevices.ui.PebbleElevatedButton
 import coredevices.ui.SignInButtons
@@ -93,6 +99,11 @@ class OnboardingViewModel(private val config: CoreConfigHolder) : ViewModel() {
     fun setIndexEnabled(enabled: Boolean) {
         config.update(config.config.value.copy(enableIndex = enabled))
     }
+
+    fun usePhoneOnly() {
+        setIndexEnabled(true)
+        stage.value = OnboardingStage.SignIn
+    }
 }
 
 private val logger = Logger.withTag("OnboardingScreen")
@@ -121,12 +132,17 @@ fun OnboardingScreen(
     val scope = rememberCoroutineScope()
     val settings: Settings = koinInject()
     val doneInitialOnboarding: DoneInitialOnboarding = koinInject()
+    val selfHosted = BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()
+    val deepLinkHandler: PebbleDeepLinkHandler? = if (selfHosted) koinInject() else null
 
     fun exitOnboarding() {
         logger.v { "exitOnboarding" }
         settings[SHOWN_ONBOARDING] = true
         doneInitialOnboarding.onDoneInitialOnboarding()
         coreNav.navigateTo(PebbleRoutes.WatchHomeRoute)
+        if (selfHosted && viewModel.coreConfig.value.enableIndex) {
+            deepLinkHandler?.navigateToTab(PebbleNavBarRoutes.IndexRoute)
+        }
     }
 
     suspend fun requestPermission(permission: Permission, uiContext: PlatformUiContext) {
@@ -205,6 +221,14 @@ fun OnboardingScreen(
                                 viewModel.stage.value = OnboardingStage.Permissions
                             },
                         )
+                        if (selfHosted) {
+                            Spacer(modifier = Modifier.height(20.dp))
+                            PebbleElevatedButton(
+                                text = "Use on this phone",
+                                onClick = viewModel::usePhoneOnly,
+                                primaryColor = true,
+                            )
+                        }
                     }
                 }
 
@@ -266,32 +290,43 @@ fun OnboardingScreen(
                 }
 
                 OnboardingStage.SignIn -> {
-                    val coreConfig by viewModel.coreConfig.collectAsState()
-                    Column(
-                        modifier = Modifier.fillMaxSize().padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Text(
-                            text = "Sign In",
-                            fontSize = 35.sp,
-                            modifier = Modifier.padding(bottom = 25.dp),
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text("Sign in to backup your Pebble account to backup apps, settings, etc", textAlign = TextAlign.Center)
-                        SignInButtons(
-                            onDismiss = { viewModel.stage.value = OnboardingStage.Done },
-                            primaryColor = true,
-                            // No anonymous data to preserve at this point — proceed straight
-                            // to the existing account if Firebase reports a collision.
-                            skipAccountSwitchConfirmation = true,
-                        )
-                        if (!coreConfig.enableIndex) {
+                    if (selfHosted) {
+                        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+                            SelfHostedIndexSettings()
                             PebbleElevatedButton(
-                                text = "Skip",
+                                text = "Continue",
                                 onClick = { viewModel.stage.value = OnboardingStage.Done },
                                 primaryColor = true,
                             )
+                        }
+                    } else {
+                        val coreConfig by viewModel.coreConfig.collectAsState()
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Text(
+                                text = "Sign In",
+                                fontSize = 35.sp,
+                                modifier = Modifier.padding(bottom = 25.dp),
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("Sign in to backup your Pebble account to backup apps, settings, etc", textAlign = TextAlign.Center)
+                            SignInButtons(
+                                onDismiss = { viewModel.stage.value = OnboardingStage.Done },
+                                primaryColor = true,
+                                // No anonymous data to preserve at this point — proceed straight
+                                // to the existing account if Firebase reports a collision.
+                                skipAccountSwitchConfirmation = true,
+                            )
+                            if (!coreConfig.enableIndex) {
+                                PebbleElevatedButton(
+                                    text = "Skip",
+                                    onClick = { viewModel.stage.value = OnboardingStage.Done },
+                                    primaryColor = true,
+                                )
+                            }
                         }
                     }
                 }
@@ -303,7 +338,7 @@ fun OnboardingScreen(
                         verticalArrangement = Arrangement.Center,
                     ) {
                         PebbleElevatedButton(
-                            text = "Connect a Pebble!",
+                            text = if (selfHosted && viewModel.coreConfig.value.enableIndex) "Open Index" else "Connect a Pebble!",
                             onClick = ::exitOnboarding,
                             primaryColor = true,
                         )

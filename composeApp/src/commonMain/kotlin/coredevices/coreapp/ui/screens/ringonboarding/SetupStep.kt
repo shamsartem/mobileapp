@@ -109,6 +109,20 @@ internal fun SetupStep(
     onFinish: () -> Unit,
 ) {
     BackHandler { onBack() }
+    if (coredevices.ring.BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) {
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            TopBarRow(onLeading = onBack, leadingIsClose = false, onTrailingClose = onExit)
+            coredevices.ring.selfhosted.ui.SelfHostedIndexSettings()
+            NumberedSection(num = 1, title = "Ring button") {
+                Text("Notes and recordings use your server. Search still uses Pebble's services.")
+                coredevices.ring.ui.screens.settings.RingButtonSection(viewModel)
+            }
+            Column(modifier = Modifier.padding(24.dp)) {
+                PrimaryFilledButton(text = "Finish setup", onClick = onFinish)
+            }
+        }
+        return
+    }
     val palette = LocalPalette.current
     val gestureRoutes by viewModel.gestureRoutes.collectAsState()
     val musicPresetSelected = { mode: MusicControlMode ->

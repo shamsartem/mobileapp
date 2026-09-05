@@ -148,6 +148,7 @@ internal fun UriHandler.openUrlSafely(url: String) {
 
 @Composable
 fun IndexSettings(coreNav: CoreNav) {
+    val selfHosted = BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()
     val viewModel = koinViewModel<SettingsViewModel>()
     val webhookViewModel = koinViewModel<IndexWebhookSettingsViewModel>()
     val llmMode by viewModel.llmMode.collectAsState()
@@ -194,7 +195,7 @@ fun IndexSettings(coreNav: CoreNav) {
     if (showSignInDialog) {
         SignInDialog(onDismiss = { showSignInDialog = false })
     }
-    IndexWebhookSheetHost()
+    if (!selfHosted) IndexWebhookSheetHost()
     if (showContactsDialog && platform.isAndroid) {
         SettingsBeeperContactsDialog(
             onDismissRequest = viewModel::closeContactsDialog
@@ -269,6 +270,15 @@ fun IndexSettings(coreNav: CoreNav) {
         LazyColumn(
             modifier = Modifier.padding(padding).fillMaxHeight()
         ) {
+            if (selfHosted) {
+                item { SelfHostedIndexSettings() }
+                item {
+                    Text(
+                        "Notes stay in this app and sync to your server. Your server transcribes recordings; start a note with a list name to file it there.",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+            }
             // Getting Started guide + FAQ — Index 01 is a new kind of device,
             // so steer everyone to the guide. Opens in the system browser.
             item {
@@ -358,6 +368,15 @@ fun IndexSettings(coreNav: CoreNav) {
             item { RingButtonSection(viewModel) }
 
             // --- Actions section ---
+            if (selfHosted) {
+                item {
+                    SectionHeader(title = "Optional Pebble search tools")
+                    Text(
+                        "The agent and speech settings below apply only to explicit searches. Searches use Pebble's services; these settings do not change self-hosted notes or transcription.",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+            }
             item { IndexAgentActionsSection(coreNav, viewModel) }
             item {
                 SettingsRow(
@@ -435,10 +454,8 @@ fun IndexSettings(coreNav: CoreNav) {
                     trailingContent = {}
                 )
             }
-            item {
-                if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) {
-                    SelfHostedIndexSettings()
-                } else {
+            if (!selfHosted) {
+                item {
                     SettingsRow(
                         title = "Backup",
                         subtitle = "Sync, manage, or delete cloud backup",
@@ -476,16 +493,18 @@ fun IndexSettings(coreNav: CoreNav) {
                     )
                 }
             }
-            item {
-                SettingsRow(
-                    title = "Webhook",
-                    subtitle = if (webhookIsLinked) "Configured, tap to modify" else "Not Linked",
-                    onClick = {
-                        configuredWebhookGesture
-                            ?.let { webhookViewModel.openDialog(it) }
-                            ?: webhookViewModel.openDialog()
-                    },
-                )
+            if (!selfHosted) {
+                item {
+                    SettingsRow(
+                        title = "Webhook",
+                        subtitle = if (webhookIsLinked) "Configured, tap to modify" else "Not Linked",
+                        onClick = {
+                            configuredWebhookGesture
+                                ?.let { webhookViewModel.openDialog(it) }
+                                ?: webhookViewModel.openDialog()
+                        },
+                    )
+                }
             }
             item {
                 SettingsRow(

@@ -5,6 +5,7 @@ import com.mmk.kmpnotifier.notification.NotifierManager
 import com.russhwolf.settings.Settings
 import coredevices.CoreBackgroundSync
 import coredevices.ExperimentalDevices
+import coredevices.ring.BuildKonfig
 import coredevices.analytics.AnalyticsBackend
 import coredevices.analytics.CoreAnalytics
 import coredevices.analytics.setUser
@@ -149,18 +150,20 @@ class CommonAppDelegate(
     }
 
     fun init() {
-        usersDao.init()
-        GlobalScope.launch(Dispatchers.Default) {
-            usersDao.initUserDevToken(pebbleAccountProvider.get().devToken.value)
-        }
-        GlobalScope.launch(Dispatchers.Default) {
-            Firebase.auth.currentUser?.emailOrNull?.let {
-                analyticsBackend.setUser(email = it)
+        if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) {
+            usersDao.init()
+            GlobalScope.launch(Dispatchers.Default) {
+                usersDao.initUserDevToken(pebbleAccountProvider.get().devToken.value)
             }
+            GlobalScope.launch(Dispatchers.Default) {
+                Firebase.auth.currentUser?.emailOrNull?.let {
+                    analyticsBackend.setUser(email = it)
+                }
+            }
+            initCactus()
+            pushMessaging.init()
+            bugReports.init()
         }
-        initCactus()
-        pushMessaging.init()
-        bugReports.init()
         GlobalScope.launch(Dispatchers.Default) {
             weatherFetcher.init()
             withContext(Dispatchers.Main) {

@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.onEach
 private const val LAST_UID_CHECKED_KEY = "ring_index_enable_last_uid_checked"
 
 internal fun listenForUserPresent(recordingsDao: FirestoreRecordingsDao, configHolder: CoreConfigHolder, settings: Settings) {
+    if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) return
     flow {
         emit(Firebase.auth.currentUser)
         emitAll(Firebase.auth.authStateChanged)

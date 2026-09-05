@@ -37,6 +37,7 @@ import coredevices.coreapp.util.FileLogWriter
 import coredevices.coreapp.util.initLogging
 import coredevices.coreapp.util.registerBluetoothPairingDebugLogger
 import coredevices.experimentalModule
+import coredevices.ring.BuildKonfig
 import coredevices.pebble.PebbleAppDelegate
 import coredevices.pebble.watchModule
 import coredevices.util.CoreConfig
@@ -62,7 +63,7 @@ class MainApplication : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
-        if (isDebuggableBuild) {
+        if (isDebuggableBuild || BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) {
             Firebase.crashlytics.setCrashlyticsCollectionEnabled(false)
         }
         startKoin {

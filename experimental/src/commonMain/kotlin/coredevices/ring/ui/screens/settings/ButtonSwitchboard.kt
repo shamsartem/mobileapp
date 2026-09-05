@@ -84,7 +84,7 @@ val RingGesture.glyph: List<Dp>
         RingGesture.ClickHold -> listOf(DOT, 26.dp)
     }
 
-fun destinationsFor(kind: GestureKind, hasSandboxGroups: Boolean): List<GestureDestination> = when (kind) {
+fun destinationsFor(kind: GestureKind, hasSandboxGroups: Boolean, selfHosted: Boolean = false): List<GestureDestination> = when (kind) {
     GestureKind.Music -> listOf(
         GestureDestination.PlayPause,
         GestureDestination.NextTrack,
@@ -93,8 +93,10 @@ fun destinationsFor(kind: GestureKind, hasSandboxGroups: Boolean): List<GestureD
     GestureKind.Recording -> buildList {
         add(GestureDestination.IndexAgent)
         add(GestureDestination.WebSearch)
-        add(GestureDestination.WebhookOnly)
-        if (hasSandboxGroups) add(GestureDestination.McpSandbox(null))
+        if (!selfHosted) {
+            add(GestureDestination.WebhookOnly)
+            if (hasSandboxGroups) add(GestureDestination.McpSandbox(null))
+        }
         add(GestureDestination.Nothing)
     }
 }
@@ -112,7 +114,7 @@ val GestureDestination.tileLabel: String
     get() = when (this) {
         GestureDestination.PlayPause -> "Play/Pause"
         GestureDestination.NextTrack -> "Next track"
-        GestureDestination.IndexAgent -> "Index agent"
+        GestureDestination.IndexAgent -> if (coredevices.ring.BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) "Self-hosted notes" else "Index agent"
         GestureDestination.WebSearch -> "Web search"
         GestureDestination.WebhookOnly -> "Webhook only"
         is GestureDestination.McpSandbox -> "MCP sandbox"
@@ -128,7 +130,7 @@ private val GestureDestination.optionLabel: String
 
 private val GestureDestination.optionSub: String?
     get() = when (this) {
-        GestureDestination.IndexAgent -> "Transcribes and takes actions for you"
+        GestureDestination.IndexAgent -> if (coredevices.ring.BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) "Your server transcribes recordings and files notes into lists" else "Transcribes and takes actions for you"
         GestureDestination.WebSearch -> "Answer lands in your feed"
         GestureDestination.WebhookOnly -> "Raw recording to your endpoint, nothing else"
         is GestureDestination.McpSandbox -> "Runs a chosen sandbox group's model and tools"
@@ -162,6 +164,7 @@ fun ButtonSwitchboard(
     onDisableWebhook: (RingGesture) -> Unit,
 ) {
     var sheetGesture by remember { mutableStateOf<RingGesture?>(null) }
+    val selfHosted = coredevices.ring.BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()
     val webhookCopies = { gesture: RingGesture -> webhookConfigFor(gesture).isActive }
 
     Column(
@@ -178,7 +181,7 @@ fun ButtonSwitchboard(
                     enabled = enabled,
                     onEdit = { sheetGesture = gesture },
                 )
-                if (gesture.kind == GestureKind.Recording &&
+                if (!selfHosted && gesture.kind == GestureKind.Recording &&
                     destination != GestureDestination.WebhookOnly &&
                     destination != GestureDestination.Nothing &&
                     webhookCopies(gesture)
@@ -198,7 +201,7 @@ fun ButtonSwitchboard(
             webhookCopyOn = webhookCopies(gesture),
             onSelect = {
                 onSetRoute(gesture, it)
-                if (!gestureSheetStaysOpenFor(gesture, it)) sheetGesture = null
+                if (selfHosted || !gestureSheetStaysOpenFor(gesture, it)) sheetGesture = null
             },
             onOpenWebhookSettings = {
                 sheetGesture = null
@@ -387,7 +390,8 @@ private fun GestureDestinationSheet(
                 color = colors.onSurface,
             )
         }
-        destinationsFor(gesture.kind, sandboxGroups.isNotEmpty()).forEach { option ->
+        val selfHosted = coredevices.ring.BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()
+        destinationsFor(gesture.kind, sandboxGroups.isNotEmpty(), selfHosted).forEach { option ->
             val selected = option.isSameChoiceAs(current)
             DestinationOption(
                 option = option,
@@ -421,7 +425,7 @@ private fun GestureDestinationSheet(
                 }
             }
         }
-        if (gesture.kind == GestureKind.Recording &&
+        if (!selfHosted && gesture.kind == GestureKind.Recording &&
             current != GestureDestination.WebhookOnly &&
             current != GestureDestination.Nothing
         ) {
@@ -438,7 +442,7 @@ private fun GestureDestinationSheet(
                 Switch(checked = webhookCopyOn, onCheckedChange = onSetWebhookCopy)
             }
         }
-        if (gesture.kind == GestureKind.Recording &&
+        if (!selfHosted && gesture.kind == GestureKind.Recording &&
             (current == GestureDestination.WebhookOnly || webhookCopyOn)
         ) {
             WebhookSheetRow(

@@ -88,7 +88,8 @@ fun RingOnboardingScreen(
     var faqInitialPage by remember { mutableStateOf(0) }
     // A real (non-anonymous) account has an email; anonymous guests don't. The
     // sign-in step is required and only shown when the user isn't signed in yet.
-    val userEmail by Firebase.auth.idTokenChanged
+    val selfHosted = coredevices.ring.BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()
+    val userEmail by if (selfHosted) remember { mutableStateOf<String?>(null) } else Firebase.auth.idTokenChanged
         .map { it?.emailOrNull }
         .distinctUntilChanged()
         .collectAsState(Firebase.auth.currentUser?.emailOrNull)
@@ -127,7 +128,7 @@ fun RingOnboardingScreen(
                             initialPage = faqInitialPage,
                             onLeaveBackwards = { step = 0 },
                             // Skip the sign-in step when the user is already signed in.
-                            onContinue = { step = if (userEmail != null) 3 else 2 },
+                            onContinue = { step = if (selfHosted || userEmail != null) 3 else 2 },
                             onExit = exit,
                             coreNav = coreNav,
                         )

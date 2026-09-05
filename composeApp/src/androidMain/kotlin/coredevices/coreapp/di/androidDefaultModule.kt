@@ -6,6 +6,7 @@ import PlatformShareLauncher
 import android.content.Context
 import com.google.android.play.core.appupdate.AppUpdateManagerFactory
 import coredevices.analytics.createAndroidAnalytics
+import coredevices.ring.BuildKonfig
 import coredevices.coreapp.PebbleBackgroundManager
 import coredevices.coreapp.appVersionName
 import coredevices.coreapp.auth.RealAppleAuthUtil
@@ -71,7 +72,7 @@ val androidDefaultModule = module {
             }
         )
     }
-    single { createAndroidAnalytics(get()) }
+    single { createAndroidAnalytics(get(), enabled = BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) }
     singleOf(::ModelDownloadManager)
     singleOf(::PebbleBackgroundManager)
 }

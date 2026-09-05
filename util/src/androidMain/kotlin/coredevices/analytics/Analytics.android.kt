@@ -4,9 +4,9 @@ import PlatformContext
 import com.mixpanel.android.mpmetrics.MixpanelAPI
 import coredevices.util.CommonBuildKonfig
 
-fun createAndroidAnalytics(platformContext: PlatformContext): AnalyticsBackend {
+fun createAndroidAnalytics(platformContext: PlatformContext, enabled: Boolean = true): AnalyticsBackend {
     val token = CommonBuildKonfig.MIXPANEL_TOKEN
-    if (token == null) {
+    if (!enabled || token == null) {
         return AndroidAnalyticsBackend(null)
     }
     val mixpanel = MixpanelAPI.getInstance(platformContext.context, CommonBuildKonfig.MIXPANEL_TOKEN, true)

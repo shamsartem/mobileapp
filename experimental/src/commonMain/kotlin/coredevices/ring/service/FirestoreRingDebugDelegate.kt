@@ -2,6 +2,7 @@ package coredevices.ring.service
 
 import co.touchlab.kermit.Logger
 import coredevices.analytics.CoreAnalytics
+import coredevices.ring.BuildKonfig
 import coredevices.haversine.KMPHaversineDebugDelegate
 import coredevices.haversine.KMPHaversineDebugInfo
 import coredevices.haversine.KMPHaversineSatellite
@@ -55,6 +56,7 @@ class FirestoreRingDebugDelegate(
 
     @OptIn(ExperimentalSerializationApi::class)
     override fun handleHaversineDebugInfo(info: KMPHaversineDebugInfo) {
+        if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) return
         if (Firebase.auth.currentUser == null) {
             logger.w { "No authenticated user, adding to pending uploads." }
             pendingUploads.add(info)

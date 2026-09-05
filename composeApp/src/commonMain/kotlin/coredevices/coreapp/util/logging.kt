@@ -4,6 +4,7 @@ import co.touchlab.kermit.LogWriter
 import co.touchlab.kermit.Logger
 import co.touchlab.kermit.Severity
 import coredevices.ExperimentalDevices
+import coredevices.ring.BuildKonfig
 import dev.gitlive.firebase.Firebase
 import dev.gitlive.firebase.crashlytics.crashlytics
 import io.ktor.utils.io.core.append
@@ -36,6 +37,8 @@ import org.koin.mp.KoinPlatform
 fun initLogging() {
     Logger.addLogWriter(object : LogWriter() {
         override fun log(severity: Severity, message: String, tag: String, throwable: Throwable?) {
+            // Notes can appear in diagnostic messages; self-hosted logs stay local.
+            if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) return
             if (severity != Severity.Verbose) {
                 val log = buildString {
                     append("[$tag] $message")

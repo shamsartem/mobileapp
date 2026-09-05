@@ -13,6 +13,18 @@ import kotlin.test.assertTrue
 class ButtonSwitchboardTest {
 
     @Test
+    fun selfHostedRecordingChoicesMatchCaptureRoutingWithoutChangingMusic() {
+        assertEquals(
+            listOf(GestureDestination.IndexAgent, GestureDestination.WebSearch, GestureDestination.Nothing),
+            destinationsFor(GestureKind.Recording, hasSandboxGroups = true, selfHosted = true),
+        )
+        assertEquals(
+            destinationsFor(GestureKind.Music, hasSandboxGroups = true),
+            destinationsFor(GestureKind.Music, hasSandboxGroups = true, selfHosted = true),
+        )
+    }
+
+    @Test
     fun everyOfferedDestinationIsValidForTheGesture() {
         RingGesture.entries.forEach { gesture ->
             destinationsFor(gesture.kind, hasSandboxGroups = true).forEach { destination ->
