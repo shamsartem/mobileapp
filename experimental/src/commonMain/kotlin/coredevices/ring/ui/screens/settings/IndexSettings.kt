@@ -88,6 +88,8 @@ import co.touchlab.kermit.Logger
 import coreapp.util.generated.resources.back
 import coreapp.util.generated.resources.settings
 import coredevices.ring.agent.LlmMode
+import coredevices.ring.BuildKonfig
+import coredevices.ring.selfhosted.ui.SelfHostedIndexSettings
 import coredevices.ring.agent.builtin_servlets.notes.NoteIntegrationFactory
 import coredevices.ring.agent.builtin_servlets.notes.NoteProvider
 import coredevices.ring.agent.builtin_servlets.notes.TASKER_DEFINITION
@@ -434,11 +436,15 @@ fun IndexSettings(coreNav: CoreNav) {
                 )
             }
             item {
-                SettingsRow(
-                    title = "Backup",
-                    subtitle = "Sync, manage, or delete cloud backup",
-                    onClick = { showBackupDialog = true },
-                )
+                if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) {
+                    SelfHostedIndexSettings()
+                } else {
+                    SettingsRow(
+                        title = "Backup",
+                        subtitle = "Sync, manage, or delete cloud backup",
+                        onClick = { showBackupDialog = true },
+                    )
+                }
             }
             item {
                 SettingsRow(

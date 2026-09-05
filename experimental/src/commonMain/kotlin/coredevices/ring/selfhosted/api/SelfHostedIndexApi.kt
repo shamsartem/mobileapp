@@ -19,12 +19,17 @@ import io.ktor.client.request.prepareGet
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -49,6 +54,11 @@ class SelfHostedIndexApi(
     }
 
     private val baseUrl = backendUrl.trimEnd('/')
+    private val authenticationMutex = Mutex()
+    private var authenticationRestored = false
+    private val _authenticated = MutableStateFlow(false)
+    val authenticated = _authenticated.asStateFlow()
+
     private val client = HttpClient(engine) {
         expectSuccess = true
         install(ContentNegotiation) {
@@ -58,15 +68,28 @@ class SelfHostedIndexApi(
             })
         }
         HttpResponseValidator {
-            handleResponseExceptionWithRequest { cause, _ ->
+            handleResponseExceptionWithRequest { cause, request ->
                 val status = (cause as? ResponseException)?.response?.status
                 if (status == HttpStatusCode.Unauthorized ||
                     status == HttpStatusCode.Forbidden
                 ) {
+                    val rejectedToken = request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ")
+                    if (rejectedToken != null) clearAuthenticationForToken(rejectedToken)
                     throw SelfHostedIndexAuthenticationException()
                 }
             }
         }
+    }
+
+    suspend fun restoreAuthentication() = authenticationMutex.withLock {
+        if (!authenticationRestored) {
+            _authenticated.value = tokenStorage.getToken(TOKEN_KEY) != null
+            authenticationRestored = true
+        }
+    }
+
+    suspend fun signOut() = authenticationMutex.withLock {
+        clearAuthentication()
     }
 
     suspend fun enroll(password: String, deviceName: String): SelfHostedDevice {
@@ -76,7 +99,11 @@ class SelfHostedIndexApi(
         }.body<EnrollmentResponse>()
 
         enrollment.requireValid()
-        tokenStorage.saveToken(TOKEN_KEY, enrollment.token)
+        authenticationMutex.withLock {
+            tokenStorage.saveToken(TOKEN_KEY, enrollment.token)
+            authenticationRestored = true
+            _authenticated.value = true
+        }
         return enrollment.device
     }
 
@@ -107,8 +134,18 @@ class SelfHostedIndexApi(
     }
 
     suspend fun revokeCurrentDevice(deviceId: String) {
-        revoke(deviceId)
+        clearAuthenticationForToken(revoke(deviceId))
+    }
+
+    private suspend fun clearAuthenticationForToken(token: String) = authenticationMutex.withLock {
+        // A new enrollment may have replaced the token while this request was in flight.
+        if (tokenStorage.getToken(TOKEN_KEY) == token) clearAuthentication()
+    }
+
+    private suspend fun clearAuthentication() {
         tokenStorage.deleteToken(TOKEN_KEY)
+        authenticationRestored = true
+        _authenticated.value = false
     }
 
     fun revisions(): Flow<Long> = flow {
@@ -145,12 +182,14 @@ class SelfHostedIndexApi(
         client.close()
     }
 
-    private suspend fun revoke(deviceId: String) {
+    private suspend fun revoke(deviceId: String): String {
         require(deviceIdPattern.matches(deviceId))
+        val token = requireToken()
         val response = client.delete(url("/v1/devices/$deviceId")) {
-            bearerAuth(requireToken())
+            bearerAuth(token)
         }.body<RevocationResponse>()
         require(response.revoked)
+        return token
     }
 
     private suspend fun requireToken(): String =

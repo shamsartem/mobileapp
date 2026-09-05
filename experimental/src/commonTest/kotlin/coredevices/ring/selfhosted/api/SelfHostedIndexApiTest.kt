@@ -16,11 +16,14 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -54,7 +57,99 @@ class SelfHostedIndexApiTest {
 
         assertEquals(device, api.enroll("secret", "Pixel"))
         assertEquals(token, storage.token)
+        assertTrue(api.authenticated.value)
         assertTrue(storage.savedKey?.isNotBlank() == true)
+        api.close()
+    }
+
+    @Test
+    fun storedAuthenticationSurvivesTransientFailureButRejectedTokenIsCleared() = runTest {
+        val storage = TestTokenStorage(token)
+        var requests = 0
+        val api = SelfHostedIndexApi(
+            "https://index.example",
+            storage,
+            MockEngine {
+                respondError(if (requests++ == 0) HttpStatusCode.ServiceUnavailable else HttpStatusCode.Unauthorized)
+            },
+        )
+
+        api.restoreAuthentication()
+        assertTrue(api.authenticated.value)
+        assertFailsWith<io.ktor.client.plugins.ServerResponseException> { api.devices() }
+        assertEquals(token, storage.token)
+        assertTrue(api.authenticated.value)
+
+        assertFailsWith<SelfHostedIndexAuthenticationException> { api.devices() }
+        assertNull(storage.token)
+        assertFalse(api.authenticated.value)
+        api.restoreAuthentication()
+        assertFalse(api.authenticated.value)
+        api.close()
+    }
+
+    @Test
+    fun localSignOutClearsAuthenticationWithoutNetworkRequest() = runTest {
+        val storage = TestTokenStorage(token)
+        val api = SelfHostedIndexApi("https://index.example", storage, MockEngine { error("No network needed") })
+
+        api.signOut()
+        api.restoreAuthentication()
+
+        assertNull(storage.token)
+        assertFalse(api.authenticated.value)
+        assertFailsWith<SelfHostedIndexAuthenticationException> { api.devices() }
+        api.close()
+    }
+
+    @Test
+    fun rejectedEnrollmentDoesNotClearExistingDeviceAuthentication() = runTest {
+        val storage = TestTokenStorage(token)
+        val api = SelfHostedIndexApi(
+            "https://index.example",
+            storage,
+            MockEngine { respondError(HttpStatusCode.Forbidden) },
+        )
+        api.restoreAuthentication()
+
+        assertFailsWith<SelfHostedIndexAuthenticationException> { api.enroll("wrong password", "Pixel") }
+
+        assertEquals(token, storage.token)
+        assertTrue(api.authenticated.value)
+        api.close()
+    }
+
+    @Test
+    fun lateRejectionOfOldTokenDoesNotClearNewEnrollment() = runTest {
+        val storage = TestTokenStorage(token)
+        val requestStarted = CompletableDeferred<Unit>()
+        val rejectRequest = CompletableDeferred<Unit>()
+        val newToken = "z".repeat(43)
+        val api = SelfHostedIndexApi(
+            "https://index.example",
+            storage,
+            MockEngine { request ->
+                if (request.method == HttpMethod.Get) {
+                    requestStarted.complete(Unit)
+                    rejectRequest.await()
+                    respondError(HttpStatusCode.Unauthorized)
+                } else {
+                    respondJson(
+                        """{"device":{"id":"${device.id}","name":"Pixel","createdAtMs":0},"token":"$newToken"}""",
+                    )
+                }
+            },
+        )
+        val pending = async {
+            assertFailsWith<SelfHostedIndexAuthenticationException> { api.devices() }
+        }
+        requestStarted.await()
+        api.enroll("secret", "Pixel")
+        rejectRequest.complete(Unit)
+        pending.await()
+
+        assertEquals(newToken, storage.token)
+        assertTrue(api.authenticated.value)
         api.close()
     }
 
@@ -135,19 +230,15 @@ class SelfHostedIndexApiTest {
         assertFailsWith<SelfHostedIndexAuthenticationException> { missingTokenApi.devices() }
         missingTokenApi.close()
 
-        var rejection = 0
-        val rejectedTokenApi = SelfHostedIndexApi(
-            "https://index.example",
-            TestTokenStorage(token),
-            MockEngine {
-                respondError(
-                    if (rejection++ == 0) HttpStatusCode.Unauthorized else HttpStatusCode.Forbidden,
-                )
-            },
-        )
-        assertFailsWith<SelfHostedIndexAuthenticationException> { rejectedTokenApi.devices() }
-        assertFailsWith<SelfHostedIndexAuthenticationException> { rejectedTokenApi.devices() }
-        rejectedTokenApi.close()
+        for (status in listOf(HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden)) {
+            val rejectedTokenApi = SelfHostedIndexApi(
+                "https://index.example",
+                TestTokenStorage(token),
+                MockEngine { respondError(status) },
+            )
+            assertFailsWith<SelfHostedIndexAuthenticationException> { rejectedTokenApi.devices() }
+            rejectedTokenApi.close()
+        }
     }
 
     @Test
