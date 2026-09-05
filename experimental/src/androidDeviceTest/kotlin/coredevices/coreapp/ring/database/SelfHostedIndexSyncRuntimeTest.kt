@@ -118,6 +118,26 @@ class SelfHostedIndexSyncRuntimeTest {
     }
 
     @Test
+    fun oldEmptyWebhookRecordingsDoNotUploadAlongsideImportedNotes() = runBlocking {
+        db.localRecordingDao().insertRecording(LocalRecording(
+            id = 1, firestoreId = "old-webhook-recording", localTimestamp = timestamp,
+        ))
+        items.upsertLocal("independent-local-item", ItemDocument(title = "Retained item"))
+        val imported = IdentifiedDocument("legacy_imported", RecordingDocument(
+            timestamp = timestamp, updated = 2000,
+            entries = listOf(RecordingEntry(timestamp = timestamp, transcription = "Imported note")),
+        ))
+        runtime { request ->
+            assertTrue(request.mutations.recordings.isEmpty())
+            accepted(request).copy(changes = SyncDelta(empty.copy(recordings = listOf(imported)), emptyList()))
+        }.syncNow()
+        assertNotNull(db.localRecordingDao().getRecording(1))
+        assertNotNull(db.localRecordingDao().getByFirestoreId("legacy_imported"))
+        assertNotNull(items.getById("independent-local-item"))
+        assertEquals(2, db.localRecordingDao().getAllRecordings().first().size)
+    }
+
+    @Test
     fun uploadBatchesAreBoundedAndAcknowledgedRowsDoNotEcho() = runBlocking {
         items.writeBatch((0..500).map { "item-$it" to ItemDocument(title = "note $it", createdAt = timestamp, updatedAt = timestamp) })
         val sizes = mutableListOf<Int>()

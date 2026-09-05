@@ -55,6 +55,7 @@ import coredevices.ring.service.indexfeed.IndexSyncRuntime
 import coredevices.ring.service.indexfeed.ItemFactory
 import coredevices.ring.service.indexfeed.SelfHostedIndexSyncRuntime
 import coredevices.ring.selfhosted.api.SelfHostedIndexApi
+import coredevices.ring.selfhosted.PreserveWebhookDatabase
 import coredevices.ring.selfhosted.sync.SelfHostedSyncState
 import io.ktor.client.engine.HttpClientEngine
 import org.koin.core.parameter.parametersOf
@@ -126,7 +127,13 @@ val experimentalModule = module {
         val builder: RoomDatabase.Builder<RingDatabase> = get()
         builder
             .addMigrations(Migrate33To34(isAndroid = get<Platform>().isAndroid))
-            .fallbackToDestructiveMigrationOnDowngrade(true)
+            .apply {
+                if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) {
+                    fallbackToDestructiveMigrationOnDowngrade(true)
+                } else {
+                    addMigrations(PreserveWebhookDatabase)
+                }
+            }
             .setDriver(BundledSQLiteDriver())
             .setQueryCoroutineContext(Dispatchers.IO)
             .build()
