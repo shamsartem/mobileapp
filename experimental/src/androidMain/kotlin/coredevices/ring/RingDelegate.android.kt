@@ -33,8 +33,8 @@ actual class RingDelegate(
             Permission.PostNotifications,
             Permission.Bluetooth,
             Permission.ExternalStorage,
-            Permission.SetAlarms,
         ))
+        if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) add(Permission.SetAlarms)
         if (isBeeperAvailable()) {
             add(Permission.Beeper)
         }
