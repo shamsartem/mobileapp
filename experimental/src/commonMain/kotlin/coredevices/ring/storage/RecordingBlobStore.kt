@@ -9,7 +9,6 @@ import dev.gitlive.firebase.storage.storage
 import io.ktor.utils.io.exhausted
 import io.ktor.utils.io.readAvailable
 import kotlinx.io.buffered
-import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readByteArray
 
@@ -42,7 +41,7 @@ class FirebaseRecordingBlobStore : RecordingBlobStore {
         val metadata = ref.getMetadata()
         val sampleRate = metadata?.customMetadata?.get("sampleRate")?.toInt()
             ?: error("Sample rate for recording $id not in firebase metadata")
-        val temporary = Path(getRecordingsCacheDirectory(), "$id.download.m4a")
+        val temporary = recordingPath(getRecordingsCacheDirectory(), "$id.download.m4a")
         try {
             val channel = ref.openReadChannel()
             SystemFileSystem.sink(temporary).buffered().use { output ->
@@ -64,7 +63,7 @@ class FirebaseRecordingBlobStore : RecordingBlobStore {
     }
 
     override suspend fun put(id: String, bytes: ByteArray, metadata: Map<String, String>, recordingId: String?) {
-        val temporary = Path(getRecordingsCacheDirectory(), "$id.upload.m4a")
+        val temporary = recordingPath(getRecordingsCacheDirectory(), "$id.upload.m4a")
         SystemFileSystem.sink(temporary).buffered().use { it.write(bytes) }
         try {
             Firebase.storage.reference("recordings/${Firebase.auth.currentUser!!.uid}/$id").putFile(

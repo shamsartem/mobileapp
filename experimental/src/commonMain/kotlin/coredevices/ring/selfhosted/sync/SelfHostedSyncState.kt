@@ -32,14 +32,15 @@ class SelfHostedSyncState(private val settings: Settings) {
         require(deletion.id.isNotBlank())
         require(deletion.deletedAt >= 0)
         mutex.withLock {
-            if (pendingRecordingDeletions.none { it.id == deletion.id }) {
-                storeRecordingDeletions(pendingRecordingDeletions + deletion)
+            val current = pendingRecordingDeletions.firstOrNull { it.id == deletion.id }
+            if (current == null || deletion.deletedAt > current.deletedAt) {
+                storeRecordingDeletions(pendingRecordingDeletions.filterNot { it.id == deletion.id } + deletion)
             }
         }
     }
 
-    suspend fun removeRecordingDeletion(id: String) = mutex.withLock {
-        val remaining = pendingRecordingDeletions.filterNot { it.id == id }
+    suspend fun acknowledgeRecordingDeletion(deletion: RecordingDeletionMutation) = mutex.withLock {
+        val remaining = pendingRecordingDeletions.filterNot { it == deletion }
         if (remaining.size != pendingRecordingDeletions.size) {
             storeRecordingDeletions(remaining)
         }

@@ -2,6 +2,7 @@ package coredevices.ring.service.indexfeed
 
 interface IndexSyncRuntime {
     fun start()
+    suspend fun onBackgroundSync() {}
 }
 
 internal fun selectIndexSyncRuntime(

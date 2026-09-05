@@ -16,15 +16,18 @@ import coredevices.ring.database.room.RingDatabase
 import coredevices.ring.database.room.repository.ItemRepository
 import coredevices.ring.database.room.repository.ListRepository
 import coredevices.ring.selfhosted.api.SelfHostedIndexApi
+import coredevices.ring.selfhosted.api.SelfHostedSyncResponseTooLargeException
 import coredevices.ring.selfhosted.sync.IdentifiedDocument
 import coredevices.ring.selfhosted.sync.MutationKind
 import coredevices.ring.selfhosted.sync.MutationOutcome
+import coredevices.ring.selfhosted.sync.SELF_HOSTED_MAXIMUM_SYNC_BYTES
 import coredevices.ring.selfhosted.sync.SELF_HOSTED_SYNC_PROTOCOL_VERSION
 import coredevices.ring.selfhosted.sync.SelfHostedSyncState
 import coredevices.ring.selfhosted.sync.SyncDelta
 import coredevices.ring.selfhosted.sync.SyncDocuments
 import coredevices.ring.selfhosted.sync.SyncRequest
 import coredevices.ring.selfhosted.sync.SyncResponse
+import coredevices.ring.selfhosted.sync.encodedSize
 import coredevices.ring.service.RecordingBackgroundScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -122,15 +125,41 @@ class SelfHostedIndexSyncRuntime(
         }
     }
 
+    override suspend fun onBackgroundSync() {
+        if (!preferences.backupEnabled.value) return
+        try {
+            syncNow()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.w(e) { "Background sync failed; local changes retained for retry" }
+        }
+    }
+
     /** Explicit sync is also available when automatic backup is disabled. */
     suspend fun syncNow() = mutex.withLock {
         var shouldPull = true
+        var mutationLimit = 500
         while (true) {
             val snapshot = snapshot()
-            val request = snapshot.request()
+            var request = snapshot.request(mutationLimit)
+            while (request.encodedSize() > SELF_HOSTED_MAXIMUM_SYNC_BYTES && request.mutationCount > 1) {
+                mutationLimit = request.mutationCount / 2
+                request = snapshot.request(mutationLimit)
+            }
+            require(request.encodedSize() <= SELF_HOSTED_MAXIMUM_SYNC_BYTES) {
+                "A sync mutation exceeds the 4 MiB protocol limit"
+            }
             if (!shouldPull && request.mutations.items.isEmpty() && request.mutations.lists.isEmpty() &&
                 request.mutations.recordings.isEmpty() && request.recordingDeletions.isEmpty()) break
-            val response = api.sync(request)
+            val response = try {
+                api.sync(request)
+            } catch (e: SelfHostedSyncResponseTooLargeException) {
+                if (request.mutationCount <= 1) throw e
+                mutationLimit = request.mutationCount / 2
+                continue
+            }
+            mutationLimit = 500
             requireMatchingAcknowledgements(request, response)
             val delta = SyncDelta(
                 SyncDocuments(
@@ -178,7 +207,7 @@ class SelfHostedIndexSyncRuntime(
             itemLastApplied.putAll(appliedItems)
             listLastApplied.putAll(appliedLists)
             for (deletion in request.recordingDeletions) {
-                if (deletion in state.pendingRecordingDeletions) state.removeRecordingDeletion(deletion.id)
+                state.acknowledgeRecordingDeletion(deletion)
             }
             state.advanceCursor(response.nextCursor)
             shouldPull = response.hasMore
@@ -207,9 +236,12 @@ class SelfHostedIndexSyncRuntime(
         db.conversationMessageDao().getMessagesForRecording(local.id).first().map { it.document },
     )
 
-    private fun Snapshot.request(): SyncRequest {
-        val deletions = state.pendingRecordingDeletions.take(500)
-        var available = 500 - deletions.size
+    private val SyncRequest.mutationCount: Int
+        get() = recordingDeletions.size + mutations.recordings.size + mutations.items.size + mutations.lists.size
+
+    private fun Snapshot.request(limit: Int = 500): SyncRequest {
+        val deletions = state.pendingRecordingDeletions.take(limit)
+        var available = limit - deletions.size
         val lists = lists.values.filter {
             (!it.locked || it.deleted) && listLastApplied[it.firestoreId] != it
         }.take(available).map { IdentifiedDocument(it.firestoreId, it.toDocument()) }

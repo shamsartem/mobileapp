@@ -2,7 +2,10 @@ package coredevices.ring.selfhosted.api
 
 import coredevices.ring.selfhosted.sync.SyncRequest
 import coredevices.ring.selfhosted.sync.SyncResponse
+import coredevices.ring.selfhosted.sync.SELF_HOSTED_MAXIMUM_SYNC_BYTES
+import coredevices.ring.selfhosted.sync.encodedSize
 import coredevices.ring.selfhosted.sync.requireSupportedSyncProtocolVersion
+import coredevices.ring.selfhosted.sync.selfHostedIndexJson
 import coredevices.util.integrations.IntegrationTokenStorage
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -22,6 +25,8 @@ import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.URLProtocol
+import io.ktor.http.Url
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLPathPart
 import io.ktor.serialization.kotlinx.json.json
@@ -33,9 +38,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 class SelfHostedIndexAuthenticationException : Exception("Self-hosted Index authentication required")
+class SelfHostedSyncResponseTooLargeException : Exception("Self-hosted Index sync response exceeds 4 MiB")
 
 data class SelfHostedAudio(val bytes: ByteArray, val sampleRate: Int)
 
@@ -58,6 +63,13 @@ class SelfHostedIndexApi(
     }
 
     private val baseUrl = backendUrl.trimEnd('/')
+    init {
+        val url = Url(baseUrl)
+        require(url.protocol == URLProtocol.HTTPS ||
+            url.protocol == URLProtocol.HTTP && url.host in setOf("localhost", "127.0.0.1", "::1")) {
+            "Self-hosted Index requires HTTPS except on loopback"
+        }
+    }
     private val authenticationMutex = Mutex()
     private var authenticationRestored = false
     private val _authenticated = MutableStateFlow(false)
@@ -66,10 +78,7 @@ class SelfHostedIndexApi(
     private val client = HttpClient(engine) {
         expectSuccess = true
         install(ContentNegotiation) {
-            json(Json {
-                encodeDefaults = true
-                ignoreUnknownKeys = true
-            })
+            json(selfHostedIndexJson)
         }
         HttpResponseValidator {
             handleResponseExceptionWithRequest { cause, request ->
@@ -114,11 +123,19 @@ class SelfHostedIndexApi(
     suspend fun sync(request: SyncRequest): SyncResponse {
         requireSupportedSyncProtocolVersion(request.protocolVersion)
         require(request.cursor >= 0)
-        val response = client.post(url("/v1/sync")) {
-            bearerAuth(requireToken())
-            contentType(ContentType.Application.Json)
-            setBody(request)
-        }.body<SyncResponse>()
+        require(request.encodedSize() <= SELF_HOSTED_MAXIMUM_SYNC_BYTES)
+        val response = try {
+            client.post(url("/v1/sync")) {
+                bearerAuth(requireToken())
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }.body<SyncResponse>()
+        } catch (e: ResponseException) {
+            if (e.response.status == HttpStatusCode.PayloadTooLarge) {
+                throw SelfHostedSyncResponseTooLargeException()
+            }
+            throw e
+        }
 
         requireSupportedSyncProtocolVersion(response.protocolVersion)
         require(response.currentRevision >= 0)

@@ -97,8 +97,9 @@ class ExperimentalDevices(
         }
     }
 
-    fun onBackgroundSync() {
+    suspend fun onBackgroundSync() {
         ringDelegate.onBackgroundSync()
+        indexSyncRuntime.onBackgroundSync()
     }
 
     fun handleDeepLink(uri: Uri): Boolean {

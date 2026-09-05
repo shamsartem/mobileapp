@@ -184,25 +184,22 @@ class CommonAppDelegate(
             logger.d { "Skipping background sync - already in progress" }
             return
         }
-        // Use the background runtime window even if the sync intervals below haven't elapsed
-        experimentalDevices.onBackgroundSync()
-        val now = Clock.System.now()
-        val config = coreConfigHolder.config.value
-        val lastFullSync =
-            Instant.fromEpochMilliseconds(settings.getLong(KEY_LAST_FULL_SYNC_MS, 0L))
-        val lastPartialSync =
-            Instant.fromEpochMilliseconds(settings.getLong(KEY_LAST_PARTIAL_SYNC_MS, 0L))
-        // 0.9× slack absorbs scheduler/timer jitter
-        val doFullSync =
-            force || (now - lastFullSync) >= config.regularSyncInterval * 0.9
-        val doPartialSync =
-            doFullSync || (now - lastPartialSync) >= config.weatherSyncInterval * 0.9
-        logger.d { "doBackgroundSync: doFullSync=$doFullSync doPartialSync=$doPartialSync" }
-        if (!doPartialSync) {
-            syncInProgress.value = false
-            return
-        }
         try {
+            // Use the background runtime window even if the sync intervals below haven't elapsed
+            experimentalDevices.onBackgroundSync()
+            val now = Clock.System.now()
+            val config = coreConfigHolder.config.value
+            val lastFullSync =
+                Instant.fromEpochMilliseconds(settings.getLong(KEY_LAST_FULL_SYNC_MS, 0L))
+            val lastPartialSync =
+                Instant.fromEpochMilliseconds(settings.getLong(KEY_LAST_PARTIAL_SYNC_MS, 0L))
+            // 0.9× slack absorbs scheduler/timer jitter
+            val doFullSync =
+                force || (now - lastFullSync) >= config.regularSyncInterval * 0.9
+            val doPartialSync =
+                doFullSync || (now - lastPartialSync) >= config.weatherSyncInterval * 0.9
+            logger.d { "doBackgroundSync: doFullSync=$doFullSync doPartialSync=$doPartialSync" }
+            if (!doPartialSync) return
             if (doFullSync) {
                 settings.putLong(KEY_LAST_FULL_SYNC_MS, now.toEpochMilliseconds())
             }
@@ -232,10 +229,10 @@ class CommonAppDelegate(
                 }
             }
             jobs.joinAll()
+            logger.d { "doBackgroundSync / finished doFullSync=$doFullSync" }
         } finally {
             syncInProgress.value = false
         }
-        logger.d { "doBackgroundSync / finished doFullSync=$doFullSync" }
     }
 
     override suspend fun timeSinceLastSync(): Duration {

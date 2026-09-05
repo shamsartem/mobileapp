@@ -33,6 +33,13 @@ internal expect fun getRecordingsCacheDirectory(): Path
  */
 internal expect fun getRecordingsDataDirectory(): Path
 
+internal fun recordingPath(directory: Path, fileName: String): Path {
+    require(fileName.isNotEmpty() && fileName != "." && fileName != ".." && '/' !in fileName && '\\' !in fileName) {
+        "Invalid recording ID"
+    }
+    return Path(directory, fileName)
+}
+
 expect fun getFirebaseStorageFile(path: Path): File
 
 class InvalidRecordingCaptureException(message: String) : IllegalArgumentException(message)
@@ -169,7 +176,7 @@ class RealRecordingStorage(
     override suspend fun exportRecording(id: String, useOriginalAudio: Boolean): Path = withContext(Dispatchers.IO) {
         val (source, meta) = openRecordingSource(id, useOriginalAudio)
         val suffix = if (useOriginalAudio) "-original" else ""
-        val path = Path(getRecordingsCacheDirectory(), "share-$id$suffix.wav")
+        val path = recordingPath(getRecordingsCacheDirectory(), "share-$id$suffix.wav")
         source.use {
             SystemFileSystem.sink(path).buffered().use { sink ->
                 sink.writeWavHeader(meta.cachedMetadata.sampleRate, meta.size.toInt())
@@ -182,17 +189,17 @@ class RealRecordingStorage(
     override suspend fun openRecordingSink(id: String, sampleRate: Int, mimeType: String): Sink = withContext(Dispatchers.IO) {
         val metadata = CachedRecordingMetadata(id, sampleRate, mimeType)
         cachedMetadataDao.insertOrReplace(metadata)
-        return@withContext SystemFileSystem.sink(Path(getRecordingsCacheDirectory(), id)).buffered()
+        return@withContext SystemFileSystem.sink(recordingPath(getRecordingsCacheDirectory(), id)).buffered()
     }
 
     override suspend fun openOriginalRecordingSink(id: String, sampleRate: Int, mimeType: String): Sink = withContext(Dispatchers.IO) {
         val metadata = CachedRecordingMetadata("$id-original", sampleRate, mimeType)
         cachedMetadataDao.insertOrReplace(metadata)
-        return@withContext SystemFileSystem.sink(Path(getRecordingsCacheDirectory(), "$id-original")).buffered()
+        return@withContext SystemFileSystem.sink(recordingPath(getRecordingsCacheDirectory(), "$id-original")).buffered()
     }
 
     private suspend fun getOrDownloadCachedRecording(id: String): Pair<Path, RecordingStorage.RecordingSourceInfo> {
-        val cachedPath = Path(getRecordingsCacheDirectory(), id)
+        val cachedPath = recordingPath(getRecordingsCacheDirectory(), id)
         var cachedMetadata = cachedMetadataDao.get(id)
         return if (!SystemFileSystem.exists(cachedPath) || cachedMetadata == null) { // Not in cache, download
             logger.d { "Downloading recording $id" }
@@ -245,7 +252,7 @@ class RealRecordingStorage(
 
     override suspend fun openCachedRecordingSource(idNoSuffix: String, useOriginalAudio: Boolean): Pair<Source, RecordingStorage.RecordingSourceInfo>? = withContext(Dispatchers.IO) {
         val id = if (useOriginalAudio) "$idNoSuffix-original" else idNoSuffix
-        val cachedPath = Path(getRecordingsCacheDirectory(), id)
+        val cachedPath = recordingPath(getRecordingsCacheDirectory(), id)
         val cachedMetadata = cachedMetadataDao.get(id)
             ?: return@withContext null
         if (!SystemFileSystem.exists(cachedPath)) {
@@ -265,7 +272,7 @@ class RealRecordingStorage(
         // Processed audio starts server transcription; back up the optional original first.
         val variants = if (recordingId != null) listOf("$id-original", id) else listOf(id, "$id-original")
         for (idToMove in variants) {
-            val source = Path(getRecordingsCacheDirectory(), idToMove)
+            val source = recordingPath(getRecordingsCacheDirectory(), idToMove)
             val cachedMetadata = cachedMetadataDao.get(idToMove)
             if (recordingId != null && idToMove != id &&
                 (cachedMetadata == null || !SystemFileSystem.exists(source))) continue
@@ -347,9 +354,9 @@ class RealRecordingStorage(
             m4aEncoder.encode(samples, sampleRate)
         } else {
             // A retry must send identical bytes even if the encoder changes container metadata.
-            val encodedPath = Path(getRecordingsDataDirectory(), "$id.m4a")
+            val encodedPath = recordingPath(getRecordingsDataDirectory(), "$id.m4a")
             if (!SystemFileSystem.exists(encodedPath)) {
-                val temporary = Path(getRecordingsDataDirectory(), "$id.m4a.tmp")
+                val temporary = recordingPath(getRecordingsDataDirectory(), "$id.m4a.tmp")
                 SystemFileSystem.sink(temporary).buffered().use { it.write(m4aEncoder.encode(samples, sampleRate)) }
                 SystemFileSystem.atomicMove(temporary, encodedPath)
             }
@@ -374,17 +381,17 @@ class RealRecordingStorage(
     }
 
     override fun deleteRecording(id: String) {
-        val source = Path(getRecordingsDataDirectory(), id)
+        val source = recordingPath(getRecordingsDataDirectory(), id)
         SystemFileSystem.delete(source)
     }
 
     override fun deleteRecordingFromCache(id: String) {
-        val source = Path(getRecordingsCacheDirectory(), id)
+        val source = recordingPath(getRecordingsCacheDirectory(), id)
         SystemFileSystem.delete(source)
     }
 
     override fun recordingExists(id: String): Boolean {
-        val source = Path(getRecordingsDataDirectory(), id)
+        val source = recordingPath(getRecordingsDataDirectory(), id)
         return SystemFileSystem.exists(source)
     }
 

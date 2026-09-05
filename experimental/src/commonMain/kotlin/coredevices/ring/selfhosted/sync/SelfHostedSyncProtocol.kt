@@ -5,8 +5,18 @@ import coredevices.indexai.data.entity.ListDocument
 import coredevices.indexai.data.entity.RecordingDocument
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 const val SELF_HOSTED_SYNC_PROTOCOL_VERSION = 1
+const val SELF_HOSTED_MAXIMUM_SYNC_BYTES = 4 * 1024 * 1024
+
+internal val selfHostedIndexJson = Json {
+    encodeDefaults = true
+    ignoreUnknownKeys = true
+}
+
+internal fun SyncRequest.encodedSize(): Int =
+    selfHostedIndexJson.encodeToString(this).encodeToByteArray().size
 
 @Serializable
 data class IdentifiedDocument<T>(

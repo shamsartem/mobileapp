@@ -23,6 +23,7 @@ import coredevices.ring.database.room.repository.ItemRepository
 import coredevices.ring.database.room.repository.ListRepository
 import coredevices.ring.selfhosted.api.SelfHostedIndexApi
 import coredevices.ring.selfhosted.sync.IdentifiedDocument
+import coredevices.ring.selfhosted.sync.SELF_HOSTED_MAXIMUM_SYNC_BYTES
 import coredevices.ring.selfhosted.sync.MutationAcknowledgement
 import coredevices.ring.selfhosted.sync.MutationKind
 import coredevices.ring.selfhosted.sync.MutationOutcome
@@ -37,6 +38,7 @@ import coredevices.ring.service.indexfeed.SelfHostedIndexSyncRuntime
 import coredevices.util.integrations.IntegrationTokenStorage
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.respondError
 import io.ktor.client.engine.mock.toByteArray
 import io.ktor.http.HttpHeaders
 import io.ktor.http.headersOf
@@ -90,7 +92,10 @@ class SelfHostedIndexSyncRuntimeTest {
         db.close()
     }
 
-    private fun runtime(handler: suspend (SyncRequest) -> SyncResponse): SelfHostedIndexSyncRuntime {
+    private fun runtime(
+        rejectResponse: (SyncRequest) -> Boolean = { false },
+        handler: suspend (SyncRequest) -> SyncResponse,
+    ): SelfHostedIndexSyncRuntime {
         val storage = object : IntegrationTokenStorage {
             override suspend fun saveToken(key: String, token: String) = Unit
             override suspend fun getToken(key: String) = "test-device-token"
@@ -100,8 +105,15 @@ class SelfHostedIndexSyncRuntimeTest {
             if (request.url.encodedPath == "/v1/events") {
                 respond("event: revision\ndata: 0\n\n", headers = headersOf(HttpHeaders.ContentType, "text/event-stream"))
             } else {
-                val response = handler(json.decodeFromString(request.body.toByteArray().decodeToString()))
-                respond(json.encodeToString(response), headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                val syncRequest = json.decodeFromString<SyncRequest>(request.body.toByteArray().decodeToString())
+                if (rejectResponse(syncRequest)) {
+                    respondError(io.ktor.http.HttpStatusCode.PayloadTooLarge)
+                } else {
+                    respond(
+                        json.encodeToString(handler(syncRequest)),
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
             }
         }).also { clients += it }
         return SelfHostedIndexSyncRuntime(api, state, db, items, lists, preferences, RecordingBackgroundScope(background))
@@ -149,6 +161,41 @@ class SelfHostedIndexSyncRuntimeTest {
         assertEquals(listOf(500, 1), sizes)
         runtime.syncNow()
         assertEquals(listOf(500, 1, 0), sizes)
+    }
+
+    @Test
+    fun uploadBatchesAlsoFitTheEncodedProtocolLimit() = runBlocking {
+        items.writeBatch((0 until 5).map {
+            "large-$it" to ItemDocument(
+                title = "x".repeat(1024 * 1024),
+                createdAt = timestamp,
+                updatedAt = timestamp,
+            )
+        })
+        val batches = mutableListOf<Pair<Int, Int>>()
+        runtime { request ->
+            batches += request.mutations.items.size to json.encodeToString(request).encodeToByteArray().size
+            accepted(request)
+        }.syncNow()
+
+        assertEquals(listOf(2, 3), batches.map { it.first })
+        assertTrue(batches.all { it.second <= SELF_HOSTED_MAXIMUM_SYNC_BYTES })
+    }
+
+    @Test
+    fun responseLimitRetriesUseSmallerMutationBatches() = runBlocking {
+        items.writeBatch((0 until 5).map {
+            "item-$it" to ItemDocument(title = "note", createdAt = timestamp, updatedAt = timestamp)
+        })
+        val batches = mutableListOf<Int>()
+        runtime(
+            rejectResponse = { request ->
+                batches += request.mutations.items.size
+                request.mutations.items.size > 2
+            },
+        ) { accepted(it) }.syncNow()
+
+        assertEquals(listOf(5, 2, 3, 1, 2), batches)
     }
 
     @Test

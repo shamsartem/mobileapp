@@ -17,7 +17,7 @@
         android:name=".MainApplication"
         android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:allowBackup="true"
+        android:allowBackup="${pebbleTelemetryEnabled}"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"

@@ -40,6 +40,33 @@ class SelfHostedIndexApiTest {
     private val emptyDocuments = SyncDocuments(emptyList(), emptyList(), emptyList())
 
     @Test
+    fun remoteTransportRequiresHttpsButLoopbackMayUseHttp() {
+        assertFailsWith<IllegalArgumentException> {
+            SelfHostedIndexApi("http://index.example", TestTokenStorage(), MockEngine { error("No request expected") })
+        }
+        assertFailsWith<IllegalArgumentException> {
+            SelfHostedIndexApi("ftp://localhost", TestTokenStorage(), MockEngine { error("No request expected") })
+        }
+        for (url in listOf("https://index.example", "http://localhost:9211", "http://127.0.0.1:9211")) {
+            SelfHostedIndexApi(url, TestTokenStorage(), MockEngine { error("No request expected") }).close()
+        }
+    }
+
+    @Test
+    fun oversizedSyncResponseCanBeRetriedByTheRuntime() = runTest {
+        val api = SelfHostedIndexApi(
+            "https://index.example",
+            TestTokenStorage(token),
+            MockEngine { respondError(HttpStatusCode.PayloadTooLarge) },
+        )
+
+        assertFailsWith<SelfHostedSyncResponseTooLargeException> {
+            api.sync(SyncRequest(SELF_HOSTED_SYNC_PROTOCOL_VERSION, 0, emptyDocuments, emptyList()))
+        }
+        api.close()
+    }
+
+    @Test
     fun audioUsesAuthenticatedBinaryTransportAndEncodedIdentifiers() = runTest {
         val bytes = byteArrayOf(0, 1, -1, 42)
         val api = SelfHostedIndexApi("https://index.example/base", TestTokenStorage(token), MockEngine { request ->

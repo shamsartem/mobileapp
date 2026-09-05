@@ -34,9 +34,24 @@ class SelfHostedSyncStateTest {
 
         assertEquals(listOf(deletion), state.pendingRecordingDeletions)
 
-        state.removeRecordingDeletion(deletion.id)
+        state.acknowledgeRecordingDeletion(deletion)
         assertEquals(emptyList(), state.pendingRecordingDeletions)
         assertEquals(emptyList(), SelfHostedSyncState(settings).pendingRecordingDeletions)
+    }
+
+    @Test
+    fun newerRedeletionCannotBeClearedByAnOlderAcknowledgement() = runTest {
+        val state = SelfHostedSyncState(MapSettings())
+        val old = RecordingDeletionMutation("recording-id", 1)
+        val newer = old.copy(deletedAt = 2)
+
+        state.addRecordingDeletion(old)
+        state.addRecordingDeletion(newer)
+        state.acknowledgeRecordingDeletion(old)
+        assertEquals(listOf(newer), state.pendingRecordingDeletions)
+
+        state.acknowledgeRecordingDeletion(newer)
+        assertEquals(emptyList(), state.pendingRecordingDeletions)
     }
 
     @Test
