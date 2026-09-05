@@ -54,6 +54,11 @@ import coredevices.ring.service.indexfeed.FirestoreIndexSyncRuntime
 import coredevices.ring.service.indexfeed.IndexSyncRuntime
 import coredevices.ring.service.indexfeed.ItemFactory
 import coredevices.ring.service.indexfeed.SelfHostedIndexSyncRuntime
+import coredevices.ring.selfhosted.api.SelfHostedIndexApi
+import coredevices.ring.selfhosted.sync.SelfHostedSyncState
+import io.ktor.client.engine.HttpClientEngine
+import org.koin.core.parameter.parametersOf
+import kotlin.time.Duration.Companion.seconds
 import coredevices.ring.service.indexfeed.selectIndexSyncRuntime
 import coredevices.libindex.database.repository.RingTransferRepository
 import coredevices.ring.external.indexwebhook.IndexWebhookApi
@@ -190,6 +195,14 @@ val experimentalModule = module {
     singleOf(::DefaultListsBootstrap)
     singleOf(::IndexFeedSyncService)
     singleOf(::FirestoreIndexSyncRuntime)
+    singleOf(::SelfHostedSyncState)
+    single {
+        SelfHostedIndexApi(
+            backendUrl = BuildKonfig.SELF_HOSTED_BACKEND_URL,
+            tokenStorage = get(),
+            engine = get<HttpClientEngine> { parametersOf(30.seconds) },
+        )
+    }
     singleOf(::SelfHostedIndexSyncRuntime)
     single<IndexSyncRuntime> {
         selectIndexSyncRuntime(

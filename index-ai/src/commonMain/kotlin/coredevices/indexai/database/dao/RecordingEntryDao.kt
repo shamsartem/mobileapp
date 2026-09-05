@@ -77,6 +77,9 @@ interface RecordingEntryDao {
     @Query("DELETE FROM RecordingEntryEntity WHERE recordingId = :recordingId")
     suspend fun deleteAllForRecording(recordingId: Long)
 
+    @Query("DELETE FROM RecordingEntryEntity WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>)
+
     @Update
     suspend fun update(entry: RecordingEntryEntity)
 }

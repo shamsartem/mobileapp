@@ -55,27 +55,10 @@ class DefaultListsBootstrap(
             return remote
         }
 
-        maybeAdd(LIST_NOTES_SELF_ID) {
-            ListDocument(
-                createdAt = now, updatedAt = now,
-                title = "Notes to self", icon = "📓",
-                listKind = "note", seed = SEED_NOTES_SELF,
-            )
+        val snapshots = documents(now).associate { (id, document) ->
+            id to maybeAdd(id) { document }
         }
-        val todosSnapshot = maybeAdd(LIST_TODOS_ID) {
-            ListDocument(
-                createdAt = now, updatedAt = now,
-                title = TODOS_RENAMED_TITLE, icon = "⏰",
-                listKind = "note", seed = SEED_TODOS,
-            )
-        }
-        maybeAdd(LIST_SHOPPING_ID) {
-            ListDocument(
-                createdAt = now, updatedAt = now,
-                title = "Shopping list", icon = "🛒",
-                listKind = "checklist", seed = SEED_SHOPPING,
-            )
-        }
+        val todosSnapshot = snapshots[LIST_TODOS_ID]
 
         // One-time rename for users seeded before the "Todos" → "Reminders"
         // rename. Gated on the stored title still being the old default, so a
@@ -115,6 +98,21 @@ class DefaultListsBootstrap(
     }
 
     companion object {
+        fun documents(now: Instant): List<Pair<String, ListDocument>> = listOf(
+            LIST_NOTES_SELF_ID to ListDocument(
+                createdAt = now, updatedAt = now, title = "Notes to self", icon = "📓",
+                listKind = "note", seed = SEED_NOTES_SELF,
+            ),
+            LIST_TODOS_ID to ListDocument(
+                createdAt = now, updatedAt = now, title = TODOS_RENAMED_TITLE, icon = "⏰",
+                listKind = "note", seed = SEED_TODOS,
+            ),
+            LIST_SHOPPING_ID to ListDocument(
+                createdAt = now, updatedAt = now, title = "Shopping list", icon = "🛒",
+                listKind = "checklist", seed = SEED_SHOPPING,
+            ),
+        )
+
         // Stable Firestore doc IDs. Ingest references LIST_TODOS_ID directly.
         const val LIST_NOTES_SELF_ID = "list_notes_self"
         const val LIST_TODOS_ID = "list_todos"

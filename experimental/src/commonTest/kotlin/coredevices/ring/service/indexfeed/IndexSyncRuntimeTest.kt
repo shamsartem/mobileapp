@@ -28,7 +28,7 @@ class IndexSyncRuntimeTest {
                 firestoreResolved = true
                 FakeIndexSyncRuntime()
             },
-            selfHosted = ::SelfHostedIndexSyncRuntime,
+            selfHosted = ::FakeIndexSyncRuntime,
         )
 
         runtime.start()

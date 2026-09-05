@@ -5,7 +5,6 @@ package coredevices.ring.service.indexfeed
 import co.touchlab.kermit.Logger
 import coredevices.indexai.data.entity.ConversationMessageEntity
 import coredevices.indexai.data.entity.RecordingDocument
-import coredevices.indexai.data.entity.RecordingEntry
 import coredevices.indexai.data.entity.RecordingEntryEntity
 import coredevices.indexai.data.entity.RecordingEntryStatus
 import coredevices.indexai.database.dao.ConversationMessageDao
@@ -93,19 +92,7 @@ class FirestoreIndexSyncRuntime(
                         val entries = recordingEntryDao.getEntriesForRecording(localRecording.id).first()
                         val messages = conversationMessageDao.getMessagesForRecording(localRecording.id).first()
                         var doc = localRecording.toDocument(
-                            entries = entries.map {
-                                RecordingEntry(
-                                    timestamp = it.timestamp,
-                                    fileName = it.fileName,
-                                    status = it.status,
-                                    transcription = it.transcription,
-                                    transcribedUsingModel = it.transcribedUsingModel,
-                                    error = it.error,
-                                    errorType = it.errorType,
-                                    ringTransferInfo = it.ringTransferInfo,
-                                    userMessageId = it.userMessageId,
-                                )
-                            },
+                            entries = entries.map { it.toSyncDocument() },
                             messages = messages.map { it.document },
                         )
                         if (preferences.useEncryption.value) {
