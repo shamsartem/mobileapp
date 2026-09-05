@@ -146,8 +146,10 @@ class SelfHostedIndexSyncRuntime(
                 deletion in state.pendingRecordingDeletions &&
                     response.reconciliation.documents.recordings.any { it.id == deletion.id }
             }.map { it.id }.toSet()
+            val arbitratedRecordingIds = (request.mutations.recordings.map { it.id } +
+                request.recordingDeletions.map { it.id }).toSet()
             transaction {
-                apply(delta, snapshot, restoredDeletionIds, appliedItems, appliedLists)
+                apply(delta, snapshot, restoredDeletionIds, arbitratedRecordingIds, appliedItems, appliedLists)
                 for (sent in request.mutations.items) {
                     val local = itemRepo.getById(sent.id)
                     if (local != null && local.toDocument() == sent.document) appliedItems[sent.id] = local
@@ -229,6 +231,7 @@ class SelfHostedIndexSyncRuntime(
         delta: SyncDelta,
         before: Snapshot,
         restoredDeletionIds: Set<String>,
+        arbitratedRecordingIds: Set<String>,
         appliedItems: MutableMap<String, CachedItem>,
         appliedLists: MutableMap<String, CachedList>,
     ) {
@@ -257,6 +260,10 @@ class SelfHostedIndexSyncRuntime(
         }
         for (id in delta.removedRecordingIds) {
             val local = db.localRecordingDao().getByFirestoreId(id) ?: continue
+            // A tombstone carries no timestamp. An unsent dirty recording may
+            // be newer; let the server arbitrate its upsert in the next batch.
+            val dirty = local.lastPushedUpdated?.let { local.updated.toEpochMilliseconds() > it } ?: true
+            if (dirty && id !in arbitratedRecordingIds) continue
             if (local == before.recordings[id]?.first && recordingDocument(local) == before.recordings[id]?.second) {
                 db.localRecordingDao().deleteRecording(local)
             }
@@ -293,7 +300,7 @@ class SelfHostedIndexSyncRuntime(
             else db.recordingEntryDao().update(linked)
         }
         val hasUnsentPending = mergedEntries.any { entry ->
-            remote.entries.none { it.timestamp == entry.timestamp && it.fileName == entry.fileName }
+            remote.entries.none { it.matches(entry) }
         }
         db.localRecordingDao().updateRecording(row.copy(
             id = localId,
@@ -337,7 +344,7 @@ internal fun mergeRecordingEntries(
 ): List<RecordingEntryEntity> {
     val remaining = local.toMutableList()
     val merged = remote.map { entry ->
-        val existing = remaining.firstOrNull { it.timestamp == entry.timestamp && it.fileName == entry.fileName }
+        val existing = remaining.firstOrNull { entry.matches(it) }
         remaining.remove(existing)
         RecordingEntryEntity(
             id = existing?.id ?: 0, recordingId = recordingId, timestamp = entry.timestamp,
@@ -348,3 +355,7 @@ internal fun mergeRecordingEntries(
     }
     return merged + remaining.filter { it.status == RecordingEntryStatus.pending || it.status == RecordingEntryStatus.agent_processing }
 }
+
+// Room stores milliseconds even when a remote Instant includes nanoseconds.
+private fun RecordingEntry.matches(local: RecordingEntryEntity) =
+    timestamp.toEpochMilliseconds() == local.timestamp.toEpochMilliseconds() && fileName == local.fileName

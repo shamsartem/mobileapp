@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.time.Instant
+import kotlin.time.Duration.Companion.nanoseconds
 
 class SelfHostedSyncMergeTest {
     private val empty = SyncDocuments(emptyList(), emptyList(), emptyList())
@@ -48,7 +49,7 @@ class SelfHostedSyncMergeTest {
         val first = RecordingEntryEntity(id = 7, recordingId = 2, timestamp = Instant.fromEpochMilliseconds(10), fileName = "a.wav", userMessageId = 3)
         val pending = first.copy(id = 8, timestamp = Instant.fromEpochMilliseconds(20), fileName = "b.wav")
         val obsolete = first.copy(id = 9, timestamp = Instant.fromEpochMilliseconds(30), status = RecordingEntryStatus.completed)
-        val remote = first.toSyncDocument().copy(status = RecordingEntryStatus.completed, transcription = "note", userMessageId = 999)
+        val remote = first.toSyncDocument().copy(timestamp = first.timestamp + 123.nanoseconds, status = RecordingEntryStatus.completed, transcription = "note", userMessageId = 999)
         val merged = mergeRecordingEntries(2, listOf(first, pending, obsolete), listOf(remote))
         assertEquals(listOf(7L, 8L), merged.map { it.id })
         assertEquals("note", merged.first().transcription)

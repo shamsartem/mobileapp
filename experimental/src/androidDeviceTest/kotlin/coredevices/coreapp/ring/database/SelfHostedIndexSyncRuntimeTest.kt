@@ -132,6 +132,33 @@ class SelfHostedIndexSyncRuntimeTest {
     }
 
     @Test
+    fun remoteTombstoneWaitsForDirtyRecordingExcludedFromFullBatch() = runBlocking {
+        items.writeBatch((0 until 500).map { "item-$it" to ItemDocument(title = "note", createdAt = timestamp, updatedAt = timestamp) })
+        val recordingId = db.localRecordingDao().insertRecording(LocalRecording(
+            firestoreId = "rec", updated = Instant.fromEpochMilliseconds(3000), lastPushedUpdated = 1000,
+        ))
+        db.recordingEntryDao().insertRecordingEntryRaw(RecordingEntryEntity(
+            recordingId = recordingId, timestamp = timestamp, status = RecordingEntryStatus.completed, transcription = "offline edit",
+        ))
+        val requests = mutableListOf<SyncRequest>()
+        val runtime = runtime { request ->
+            requests += request
+            if (requests.size == 1) {
+                assertTrue(request.mutations.recordings.isEmpty())
+                accepted(request).copy(changes = SyncDelta(empty, listOf("rec")))
+            } else {
+                assertEquals("offline edit", request.mutations.recordings.single().document.entries.single().transcription)
+                // The server, after seeing updated=3000, accepts this newer edit.
+                accepted(request, 2)
+            }
+        }
+        runtime.syncNow()
+        assertEquals(2, requests.size)
+        assertEquals(3000, db.localRecordingDao().getRecording(recordingId)?.lastPushedUpdated)
+        assertEquals("offline edit", db.recordingEntryDao().getEntriesForRecording(recordingId).first().single().transcription)
+    }
+
+    @Test
     fun committedPageSurvivesFailureAndRetryResumesItsCursor() = runBlocking<Unit> {
         val cursors = mutableListOf<Long>()
         var failSecondPage = true
@@ -197,8 +224,9 @@ class SelfHostedIndexSyncRuntimeTest {
                 persisted.putLong(key, value)
             }
         })
-        val remote = RecordingDocument(timestamp = timestamp, updated = 2000, entries = listOf(
-            RecordingEntry(timestamp = timestamp, status = RecordingEntryStatus.completed, transcription = "replayed"),
+        val remoteTimestamp = Instant.fromEpochSeconds(1, 123456789)
+        val remote = RecordingDocument(timestamp = remoteTimestamp, updated = 2000, entries = listOf(
+            RecordingEntry(timestamp = remoteTimestamp, status = RecordingEntryStatus.completed, transcription = "replayed"),
         ))
         val runtime = runtime { request -> accepted(request).copy(
             changes = SyncDelta(empty.copy(recordings = listOf(IdentifiedDocument("rec", remote))), emptyList()),
@@ -206,11 +234,16 @@ class SelfHostedIndexSyncRuntimeTest {
         assertFailsWith<IllegalStateException> { runtime.syncNow() }
         val localId = assertNotNull(db.localRecordingDao().getByFirestoreId("rec")).id
         val entryId = db.recordingEntryDao().getEntriesForRecording(localId).first().single().id
+        val transferId = db.ringTransferDao().insert(RingTransfer(
+            recordingId = localId, recordingEntryId = entryId, isCurrentIndexIteration = true,
+            transferInfo = null, status = RingTransferStatus.Completed,
+        ))
         assertEquals(0, state.cursor)
         failCursorWrite = false
         runtime.syncNow()
         assertEquals(localId, db.localRecordingDao().getAllRecordings().first().single().id)
         assertEquals(entryId, db.recordingEntryDao().getEntriesForRecording(localId).first().single().id)
+        assertEquals(entryId, db.ringTransferDao().getById(transferId)?.recordingEntryId)
         assertEquals(1, state.cursor)
     }
 
