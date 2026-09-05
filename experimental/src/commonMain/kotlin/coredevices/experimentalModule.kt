@@ -87,6 +87,9 @@ import coredevices.ring.encryption.DocumentEncryptor
 import coredevices.ring.encryption.EncryptionManager
 import coredevices.ring.service.RingHacksDelegate
 import coredevices.ring.storage.RealRecordingStorage
+import coredevices.ring.storage.RecordingBlobStore
+import coredevices.ring.storage.FirebaseRecordingBlobStore
+import coredevices.ring.storage.SelfHostedRecordingBlobStore
 import coredevices.ring.storage.RecordingStorage
 import coredevices.ring.util.trace.RingTraceSession
 import coredevices.ring.util.trace.TraceSessionExporter
@@ -250,6 +253,10 @@ val experimentalModule = module {
     single { RecordingBackgroundScope(CoroutineScope(Dispatchers.IO + SupervisorJob())) }
     single { RecordingProcessingQueue(get(), get(), get(), get(), get(), get(), get(), get()) }
     singleOf(::RecordingOperationFactory)
+    single<RecordingBlobStore> {
+        if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) SelfHostedRecordingBlobStore(get())
+        else FirebaseRecordingBlobStore()
+    }
     singleOf(::RealRecordingStorage) bind RecordingStorage::class
     singleOf(::DocumentEncryptor)
     singleOf(::EncryptionManager)

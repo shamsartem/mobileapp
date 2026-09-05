@@ -118,7 +118,7 @@ class RecordingPreprocessorTest {
                 )
             }
 
-            override suspend fun persistRecording(id: String) {}
+            override suspend fun persistRecording(id: String, recordingId: String?) {}
 
             override fun recordingExists(id: String): Boolean {
                 TODO()

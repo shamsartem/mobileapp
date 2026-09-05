@@ -15,6 +15,7 @@ import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.prepareGet
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsChannel
@@ -22,6 +23,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.http.encodeURLPathPart
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.flow.Flow
@@ -34,6 +36,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 class SelfHostedIndexAuthenticationException : Exception("Self-hosted Index authentication required")
+
+data class SelfHostedAudio(val bytes: ByteArray, val sampleRate: Int)
 
 @Serializable
 data class SelfHostedDevice(
@@ -128,6 +132,28 @@ class SelfHostedIndexApi(
         client.get(url("/v1/devices")) {
             bearerAuth(requireToken())
         }.body<DeviceListResponse>().devices.onEach { it.requireValid() }
+
+    suspend fun getAudio(blobId: String): SelfHostedAudio {
+        val response = client.get(url("/v1/audio/${blobId.encodeURLPathPart()}")) {
+            bearerAuth(requireToken())
+        }
+        require(response.contentType()?.match(ContentType.Audio.MP4) == true)
+        val sampleRate = requireNotNull(response.headers["X-Audio-Sample-Rate"]?.toIntOrNull())
+        require(sampleRate in 1..192_000)
+        return SelfHostedAudio(response.body(), sampleRate)
+    }
+
+    suspend fun putAudio(recordingId: String, blobId: String, bytes: ByteArray, sampleRate: Int) {
+        require(sampleRate in 1..192_000 && bytes.isNotEmpty() && bytes.size <= 16 * 1024 * 1024)
+        val result = client.put(url(
+            "/v1/recordings/${recordingId.encodeURLPathPart()}/audio/${blobId.encodeURLPathPart()}?sampleRate=$sampleRate"
+        )) {
+            bearerAuth(requireToken())
+            contentType(ContentType.Audio.MP4)
+            setBody(bytes)
+        }.body<AudioUploadResponse>()
+        require(result.blobId == blobId && Regex("[a-f0-9]{64}").matches(result.sha256))
+    }
 
     suspend fun revokeDevice(deviceId: String) {
         revoke(deviceId)
@@ -226,3 +252,6 @@ private data class DeviceListResponse(val devices: List<SelfHostedDevice>)
 
 @Serializable
 private data class RevocationResponse(val revoked: Boolean)
+
+@Serializable
+private data class AudioUploadResponse(val blobId: String, val sha256: String)

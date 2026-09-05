@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
@@ -37,6 +38,61 @@ class SelfHostedIndexApiTest {
     )
     private val token = "abcdefghijklmnopqrstuvwxyzABCDEFGH_12345678"
     private val emptyDocuments = SyncDocuments(emptyList(), emptyList(), emptyList())
+
+    @Test
+    fun audioUsesAuthenticatedBinaryTransportAndEncodedIdentifiers() = runTest {
+        val bytes = byteArrayOf(0, 1, -1, 42)
+        val api = SelfHostedIndexApi("https://index.example/base", TestTokenStorage(token), MockEngine { request ->
+            assertEquals("Bearer $token", request.headers[HttpHeaders.Authorization])
+            if (request.method == HttpMethod.Put) {
+                assertEquals("/base/v1/recordings/record%20one/audio/blob%3Fone", request.url.encodedPath)
+                assertEquals("16000", request.url.parameters["sampleRate"])
+                assertEquals(ContentType.Audio.MP4, request.body.contentType)
+                assertContentEquals(bytes, request.body.toByteArray())
+                respondJson("""{"blobId":"blob?one","sha256":"${"a".repeat(64)}"}""")
+            } else {
+                assertEquals("/base/v1/audio/blob%3Fone", request.url.encodedPath)
+                respond(bytes, headers = headersOf(
+                    HttpHeaders.ContentType to listOf("audio/mp4"),
+                    "X-Audio-Sample-Rate" to listOf("16000"),
+                ))
+            }
+        })
+        api.putAudio("record one", "blob?one", bytes, 16000)
+        val downloaded = api.getAudio("blob?one")
+        assertContentEquals(bytes, downloaded.bytes)
+        assertEquals(16000, downloaded.sampleRate)
+        api.close()
+    }
+
+    @Test
+    fun audioRejectsInvalidMetadataAndMismatchedAcknowledgement() = runTest {
+        for ((type, rate) in listOf("text/plain" to "16000", "audio/mp4" to "0", "audio/mp4" to "bad")) {
+            val api = SelfHostedIndexApi("https://index.example", TestTokenStorage(token), MockEngine {
+                respond(byteArrayOf(1), headers = headersOf(
+                    HttpHeaders.ContentType to listOf(type),
+                    "X-Audio-Sample-Rate" to listOf(rate),
+                ))
+            })
+            assertFailsWith<IllegalArgumentException> { api.getAudio("blob") }
+            api.close()
+        }
+        val api = SelfHostedIndexApi("https://index.example", TestTokenStorage(token), MockEngine {
+            respondJson("""{"blobId":"different","sha256":"${"a".repeat(64)}"}""")
+        })
+        assertFailsWith<IllegalArgumentException> { api.putAudio("record", "blob", byteArrayOf(1), 16000) }
+        api.close()
+    }
+
+    @Test
+    fun audioRequiresAuthenticationAndValidUploadBeforeNetwork() = runTest {
+        val api = SelfHostedIndexApi("https://index.example", TestTokenStorage(), MockEngine { error("No request expected") })
+        assertFailsWith<SelfHostedIndexAuthenticationException> { api.getAudio("blob") }
+        assertFailsWith<SelfHostedIndexAuthenticationException> { api.putAudio("record", "blob", byteArrayOf(1), 16000) }
+        assertFailsWith<IllegalArgumentException> { api.putAudio("record", "blob", byteArrayOf(), 16000) }
+        assertFailsWith<IllegalArgumentException> { api.putAudio("record", "blob", byteArrayOf(1), 0) }
+        api.close()
+    }
 
     @Test
     fun enrollmentUsesJoinedRouteAndStoresValidatedToken() = runTest {
