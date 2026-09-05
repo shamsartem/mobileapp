@@ -202,6 +202,47 @@ class SelfHostedIndexApiTest {
     }
 
     @Test
+    fun inconsistentSyncPaginationIsRejected() = runTest {
+        val request = SyncRequest(
+            protocolVersion = SELF_HOSTED_SYNC_PROTOCOL_VERSION,
+            cursor = 4,
+            mutations = emptyDocuments,
+            recordingDeletions = emptyList(),
+        )
+        val api = SelfHostedIndexApi(
+            "https://index.example",
+            TestTokenStorage(token),
+            MockEngine {
+                respondJson(
+                    json.encodeToString(
+                        syncResponse(nextCursor = 5, currentRevision = 5).copy(hasMore = true),
+                    ),
+                )
+            },
+        )
+
+        assertFailsWith<IllegalArgumentException> { api.sync(request) }
+        api.close()
+    }
+
+    @Test
+    fun malformedRevisionEventIsRejected() = runTest {
+        val api = SelfHostedIndexApi(
+            "https://index.example",
+            TestTokenStorage(token),
+            MockEngine {
+                respond(
+                    content = "event: revision\ndata: invalid\n\n",
+                    headers = headersOf(HttpHeaders.ContentType, ContentType.Text.EventStream.toString()),
+                )
+            },
+        )
+
+        assertFailsWith<IllegalArgumentException> { api.revisions().toList() }
+        api.close()
+    }
+
+    @Test
     fun revisionsParsesOnlyAuthenticatedRevisionEvents() = runTest {
         val api = SelfHostedIndexApi(
             "https://index.example/",
