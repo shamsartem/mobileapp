@@ -92,7 +92,8 @@ class SelfHostedIndexApi(
         requireSupportedSyncProtocolVersion(response.protocolVersion)
         require(response.currentRevision >= 0)
         require(response.nextCursor in request.cursor..response.currentRevision)
-        require(!response.hasMore || response.nextCursor < response.currentRevision)
+        require(response.hasMore == (response.nextCursor < response.currentRevision))
+        require(!response.hasMore || response.nextCursor > request.cursor)
         return response
     }
 

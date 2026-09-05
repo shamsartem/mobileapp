@@ -209,18 +209,24 @@ class SelfHostedIndexApiTest {
             mutations = emptyDocuments,
             recordingDeletions = emptyList(),
         )
+        var responseNumber = 0
         val api = SelfHostedIndexApi(
             "https://index.example",
             TestTokenStorage(token),
             MockEngine {
+                val response = when (responseNumber++) {
+                    0 -> syncResponse(nextCursor = 5, currentRevision = 5).copy(hasMore = true)
+                    1 -> syncResponse(nextCursor = 4, currentRevision = 5).copy(hasMore = true)
+                    else -> syncResponse(nextCursor = 4, currentRevision = 5)
+                }
                 respondJson(
-                    json.encodeToString(
-                        syncResponse(nextCursor = 5, currentRevision = 5).copy(hasMore = true),
-                    ),
+                    json.encodeToString(response),
                 )
             },
         )
 
+        assertFailsWith<IllegalArgumentException> { api.sync(request) }
+        assertFailsWith<IllegalArgumentException> { api.sync(request) }
         assertFailsWith<IllegalArgumentException> { api.sync(request) }
         api.close()
     }
