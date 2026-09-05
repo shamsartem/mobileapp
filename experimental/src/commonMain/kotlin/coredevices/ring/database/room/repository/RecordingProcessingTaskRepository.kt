@@ -15,6 +15,9 @@ class RecordingProcessingTaskRepository(
     private val dao: RecordingProcessingTaskDao
 ): QueueTaskRepository<RecordingProcessingTask> {
 
+    suspend fun getLatestStageForCapture(recordingId: Long, fileId: String? = null, transferId: Long? = null): String? =
+        dao.getLatestStageForCapture(recordingId, fileId, transferId)
+
     suspend fun getLatestButtonSequenceForTransfer(transferId: Long): String? =
         dao.getLatestButtonSequenceForTransfer(transferId)
 

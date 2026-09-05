@@ -65,18 +65,23 @@ class RecordingProcessingQueue(
     }
 
     override fun canAttempt(task: RecordingProcessingTask): Boolean {
-        val selfHostedCapture = when (val input = task.task) {
-            is ProcessingTask.AudioRecording -> recordingOperationFactory.usesSelfHostedAudio(input.buttonSequence?.parseAsButtonSequence())
-            is ProcessingTask.LocalAudioRecording -> recordingOperationFactory.usesSelfHostedAudio(input.buttonSequence?.parseAsButtonSequence())
-            is ProcessingTask.TextRecording -> BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank() && !isTypedQuestion(input.transcription)
-        }
-        return selfHostedCapture || super.canAttempt(task)
+        return captureRoute(task) == true || super.canAttempt(task)
+    }
+
+    private fun captureRoute(task: RecordingProcessingTask): Boolean? {
+        if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) return null
+        return task.lastSuccessfulStage?.let { RecordingProcessingStage.fromJson(it).selfHostedCapture }
+            // Old audio tasks have no trustworthy saved route. Never send them to Pebble implicitly.
+            ?: (task.task.let { it !is ProcessingTask.TextRecording || !isTypedQuestion(it.transcription) })
     }
 
     override suspend fun processTask(task: RecordingProcessingTask) {
         val taskData = task.task
         val stage = task.lastSuccessfulStage?.let { RecordingProcessingStage.fromJson(it) }
-        val handle = TaskHandle(task.id, stage)
+        val handle = TaskHandle(task.id, stage, captureRoute(task))
+        if (handle.selfHostedCapture != null && stage?.selfHostedCapture == null) {
+            handle.updateStage(stage ?: RecordingProcessingStage.RouteSelected(handle.selfHostedCapture))
+        }
         when (taskData) {
             is ProcessingTask.AudioRecording -> handleRecording(handle, taskData)
             is ProcessingTask.LocalAudioRecording -> handleRecording(handle, taskData)
@@ -113,7 +118,8 @@ class RecordingProcessingQueue(
                 fileId = fileId,
                 transferId = transferId,
                 forcedNoteTool = ::forcedNoteTool,
-                sequence = buttonSequence?.parseAsButtonSequence()
+                sequence = buttonSequence?.parseAsButtonSequence(),
+                selfHostedCapture = handle.selfHostedCapture,
             )
         } catch (e: AgentAuthenticationException) {
             logger.e(e) { "Creation of recording operation failed" }
@@ -248,8 +254,24 @@ class RecordingProcessingQueue(
     }
 
     private suspend fun scheduleTask(task: RecordingProcessingTask): Long {
+        val stagedTask = if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) {
+            val stage = task.lastSuccessfulStage?.let { RecordingProcessingStage.fromJson(it) }
+            val savedRoute = (stage as? RecordingProcessingStage.RecordingEntityCreated)?.let {
+                when (val input = task.task) {
+                    is ProcessingTask.AudioRecording -> queueTaskRepository.getLatestStageForCapture(it.recordingEntityId, transferId = input.transferId)
+                    is ProcessingTask.LocalAudioRecording -> queueTaskRepository.getLatestStageForCapture(it.recordingEntityId, fileId = input.fileId)
+                    is ProcessingTask.TextRecording -> null
+                }?.let { RecordingProcessingStage.fromJson(it).selfHostedCapture }
+            }
+            val selected = savedRoute ?: if (stage != null) requireNotNull(captureRoute(task)) else when (val input = task.task) {
+                is ProcessingTask.AudioRecording -> recordingOperationFactory.usesSelfHostedAudio(input.buttonSequence?.parseAsButtonSequence())
+                is ProcessingTask.LocalAudioRecording -> recordingOperationFactory.usesSelfHostedAudio(input.buttonSequence?.parseAsButtonSequence())
+                is ProcessingTask.TextRecording -> !isTypedQuestion(input.transcription)
+            }
+            task.copy(lastSuccessfulStage = (stage ?: RecordingProcessingStage.RouteSelected(selected)).toJson(selected))
+        } else task
         val id = withContext(Dispatchers.IO) {
-            queueTaskRepository.insertTask(task)
+            queueTaskRepository.insertTask(stagedTask)
         }
         super.scheduleTask(id)
         return id
@@ -357,12 +379,16 @@ class RecordingProcessingQueue(
         )
     }
 
-    inner class TaskHandle(val taskId: Long, initialStage: RecordingProcessingStage?) {
+    inner class TaskHandle(
+        val taskId: Long,
+        initialStage: RecordingProcessingStage?,
+        val selfHostedCapture: Boolean? = initialStage?.selfHostedCapture,
+    ) {
         val stage: RecordingProcessingStage? get() = _stage
         private var _stage: RecordingProcessingStage? = initialStage
         suspend fun updateStage(newStage: RecordingProcessingStage) {
             _stage = newStage
-            val stageString = newStage.toJson()
+            val stageString = newStage.toJson(selfHostedCapture)
             withContext(Dispatchers.IO) {
                 queueTaskRepository.updateLastSuccessfulStage(taskId, stageString)
             }
@@ -373,34 +399,41 @@ class RecordingProcessingQueue(
 @Serializable
 sealed interface RecordingProcessingStageJson {
     @Serializable
-    data class RecordingEntityCreated(val recordingEntityId: Long): RecordingProcessingStageJson
+    data class RouteSelected(val selfHostedCapture: Boolean): RecordingProcessingStageJson
     @Serializable
-    data class RecordingEntryCreated(val recordingEntryId: Long, val recordingEntityId: Long): RecordingProcessingStageJson
+    data class RecordingEntityCreated(val recordingEntityId: Long, val selfHostedCapture: Boolean? = null): RecordingProcessingStageJson
+    @Serializable
+    data class RecordingEntryCreated(val recordingEntryId: Long, val recordingEntityId: Long, val selfHostedCapture: Boolean? = null): RecordingProcessingStageJson
 }
 
-fun RecordingProcessingStage.toJson(): String {
+fun RecordingProcessingStage.toJson(selfHostedCapture: Boolean? = this.selfHostedCapture): String {
     return Json.encodeToString(
         // Remember this will return first matching type, so subsequent types should be earlier
         when (this) {
+            is RecordingProcessingStage.RouteSelected -> RecordingProcessingStageJson.RouteSelected(requireNotNull(selfHostedCapture))
             is RecordingProcessingStage.RecordingEntryCreated -> RecordingProcessingStageJson.RecordingEntryCreated(
                 recordingEntryId = this.recordingEntryId,
-                recordingEntityId = this.recordingEntityId
+                recordingEntityId = this.recordingEntityId,
+                selfHostedCapture = selfHostedCapture,
             )
             is RecordingProcessingStage.RecordingEntityCreated -> RecordingProcessingStageJson.RecordingEntityCreated(
-                recordingEntityId = this.recordingEntityId
+                recordingEntityId = this.recordingEntityId,
+                selfHostedCapture = selfHostedCapture,
             )
         }
     )
 }
 
 sealed interface RecordingProcessingStage {
-    open class RecordingEntityCreated(val recordingEntityId: Long) : RecordingProcessingStage
+    val selfHostedCapture: Boolean?
+    class RouteSelected(override val selfHostedCapture: Boolean) : RecordingProcessingStage
+    open class RecordingEntityCreated(val recordingEntityId: Long, override val selfHostedCapture: Boolean? = null) : RecordingProcessingStage
     open class RecordingEntryCreated : RecordingEntityCreated {
         val recordingEntryId: Long
-        constructor(recordingEntryId: Long, previous: RecordingEntityCreated): super(previous.recordingEntityId) {
+        constructor(recordingEntryId: Long, previous: RecordingEntityCreated): super(previous.recordingEntityId, previous.selfHostedCapture) {
             this.recordingEntryId = recordingEntryId
         }
-        constructor(recordingEntryId: Long, recordingEntityId: Long): super(recordingEntityId) {
+        constructor(recordingEntryId: Long, recordingEntityId: Long, selfHostedCapture: Boolean? = null): super(recordingEntityId, selfHostedCapture) {
             this.recordingEntryId = recordingEntryId
         }
     }
@@ -409,12 +442,15 @@ sealed interface RecordingProcessingStage {
         fun fromJson(json: String): RecordingProcessingStage {
             val jsonElement = Json.decodeFromString<RecordingProcessingStageJson>(json)
             return when (jsonElement) {
+                is RecordingProcessingStageJson.RouteSelected -> RouteSelected(jsonElement.selfHostedCapture)
                 is RecordingProcessingStageJson.RecordingEntityCreated -> RecordingEntityCreated(
-                    recordingEntityId = jsonElement.recordingEntityId
+                    recordingEntityId = jsonElement.recordingEntityId,
+                    selfHostedCapture = jsonElement.selfHostedCapture,
                 )
                 is RecordingProcessingStageJson.RecordingEntryCreated -> RecordingEntryCreated(
                     recordingEntryId = jsonElement.recordingEntryId,
-                    recordingEntityId = jsonElement.recordingEntityId
+                    recordingEntityId = jsonElement.recordingEntityId,
+                    selfHostedCapture = jsonElement.selfHostedCapture,
                 )
             }
         }

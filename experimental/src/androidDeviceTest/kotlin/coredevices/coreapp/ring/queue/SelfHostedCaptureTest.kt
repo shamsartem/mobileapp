@@ -36,11 +36,13 @@ import coredevices.ring.selfhosted.capture.SelfHostedTextRecordingOperation
 import coredevices.ring.selfhosted.sync.*
 import coredevices.ring.service.RecordingBackgroundScope
 import coredevices.ring.service.button.GestureRoutingPreferences
+import coredevices.ring.service.button.GestureDestination
 import coredevices.ring.service.button.RingGesture
 import coredevices.ring.service.indexfeed.ItemFactory
 import coredevices.ring.service.indexfeed.SelfHostedIndexSyncRuntime
 import coredevices.ring.service.recordings.RecordingPreprocessor
 import coredevices.ring.service.recordings.RecordingProcessingQueue
+import coredevices.ring.service.recordings.RecordingProcessingStage
 import coredevices.ring.service.recordings.button.RecordingOperationFactory
 import coredevices.ring.storage.RealRecordingStorage
 import coredevices.ring.storage.InvalidRecordingCaptureException
@@ -89,6 +91,7 @@ class SelfHostedCaptureTest {
     private lateinit var recordings: RecordingRepository
     private lateinit var transfers: RingTransferRepository
     private lateinit var trace: RingTraceSession
+    private lateinit var routing: GestureRoutingPreferences
     private val json = Json { encodeDefaults = true }
     private val empty = SyncDocuments(emptyList(), emptyList(), emptyList())
     private val files = mutableListOf<String>()
@@ -164,8 +167,9 @@ class SelfHostedCaptureTest {
         val sandbox = McpSandboxRepository(db.mcpSandboxGroupDao(), db.builtinMcpGroupAssociationDao(),
             db.httpMcpServerDao(), db.httpMcpGroupAssociationDao(), FakeServletRepository(), db)
         trace = RingTraceSession(db.traceEntryDao(), db.traceSessionDao())
+        routing = GestureRoutingPreferences(MapSettings(), preferences)
         factory = RecordingOperationFactory(AgentFactory(), sandbox, McpSessionFactory(sandbox, BuiltinServletRepository()),
-            GestureRoutingPreferences(MapSettings(), preferences), object : IndexWebhookApi {
+            routing, object : IndexWebhookApi {
                 override fun uploadIfEnabled(samples: ShortArray?, sampleRate: Int, recordingId: String,
                     transcription: String?, recordedAt: Instant, gesture: RingGesture) = error("Webhook must not run")
                 override suspend fun sendTestEvent(gesture: RingGesture, url: String, headers: Map<String, String>): IndexWebhookRunResult =
@@ -232,7 +236,7 @@ class SelfHostedCaptureTest {
     @Test
     fun offlinePhoneCaptureSurvivesAttemptLimitAndRestartThenReplaysIdenticalUploads() = runBlocking {
         val file = audio()
-        queue.queueLocalAudioProcessing(file)
+        queue.queueLocalAudioProcessing(file, "long")
         val pending = awaitTask(1) { it.attempts >= 4 }
         assertEquals(TaskStatus.Pending, pending.status)
         val recording = db.localRecordingDao().getAllRecordings().first().single()
@@ -241,6 +245,7 @@ class SelfHostedCaptureTest {
         assertNotNull(recording.firestoreId)
         assertEquals(recording.id, pending.recordingId)
         assertTrue(File(context.filesDir, "recording-pcm").exists())
+        routing.setRoute(RingGesture.Hold, GestureDestination.WebSearch)
         queue.close()
         background.cancel()
         background = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -259,6 +264,24 @@ class SelfHostedCaptureTest {
         assertContentEquals(uploads[1].second, uploads[3].second)
         assertEquals(recording.id, db.localRecordingDao().getAllRecordings().first().single().id)
         assertEquals(entry.id, db.recordingEntryDao().getEntriesForRecording(recording.id).first().single().id)
+        queue.retryLocalRecording(file, "long", recording.id, entry.id)
+        val retry = awaitTask(2) { it.status == TaskStatus.Success }
+        assertEquals(true, RecordingProcessingStage.fromJson(assertNotNull(retry.lastSuccessfulStage)).selfHostedCapture)
+    }
+
+    @Test
+    fun explicitSearchKeepsItsSavedRouteAndAttemptLimitAfterGestureChanges() = runBlocking {
+        queue.close()
+        routing.setRoute(RingGesture.Hold, GestureDestination.WebSearch)
+        queue.queueLocalAudioProcessing("search-file", "long")
+        val saved = assertNotNull(tasks.getTaskById(1)?.lastSuccessfulStage)
+        assertEquals(false, RecordingProcessingStage.fromJson(saved).selfHostedCapture)
+        repeat(3) { tasks.incrementAttempts(1) }
+        routing.setRoute(RingGesture.Hold, GestureDestination.IndexAgent)
+        queue = newQueue()
+        queue.resumePendingTasks()
+        awaitTask(1) { it.status == TaskStatus.Failed }
+        assertTrue(db.localRecordingDao().getAllRecordings().first().isEmpty())
     }
 
     @Test

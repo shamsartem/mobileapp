@@ -45,13 +45,16 @@ class RecordingOperationFactory(
         fileId: String,
         transferId: Long?,
         forcedNoteTool: (suspend (messageText: String, sessionContext: SessionContext) -> ToolCallResult),
-        sequence: List<ButtonPress>?
+        sequence: List<ButtonPress>?,
+        selfHostedCapture: Boolean? = null,
     ): RecordingOperation {
-        if (usesSelfHostedAudio(sequence)) {
+        if (selfHostedCapture ?: usesSelfHostedAudio(sequence)) {
             return SelfHostedAudioRecordingOperation(recordingId, fileId, transferId)
         }
         val gesture = sequence?.let { RingGesture.forSequence(it) }
-        val destination = gestureRouting.recordingDestinationFor(gesture)
+        val destination = if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank() && selfHostedCapture == false) {
+            GestureDestination.WebSearch
+        } else gestureRouting.recordingDestinationFor(gesture)
         val inner = createForDestination(
             destination = destination,
             recordingId = recordingId,

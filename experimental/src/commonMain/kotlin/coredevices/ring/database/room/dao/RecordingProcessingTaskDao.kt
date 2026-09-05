@@ -10,6 +10,9 @@ import kotlin.time.Instant
 
 @Dao
 interface RecordingProcessingTaskDao {
+    @Query("SELECT lastSuccessfulStage FROM RecordingProcessingTaskEntity WHERE recordingId = :recordingId AND (fileId = :fileId OR transferId = :transferId) ORDER BY created DESC LIMIT 1")
+    suspend fun getLatestStageForCapture(recordingId: Long, fileId: String?, transferId: Long?): String?
+
     @Query("SELECT buttonSequence FROM RecordingProcessingTaskEntity WHERE transferId = :transferId AND buttonSequence IS NOT NULL ORDER BY created DESC LIMIT 1")
     suspend fun getLatestButtonSequenceForTransfer(transferId: Long): String?
 
