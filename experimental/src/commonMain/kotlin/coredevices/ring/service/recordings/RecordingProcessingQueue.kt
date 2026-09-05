@@ -1,10 +1,14 @@
 package coredevices.ring.service.recordings
 
+import androidx.room.Transactor
+import androidx.room.useWriterConnection
 import co.touchlab.kermit.Logger
 import coredevices.indexai.data.entity.RecordingEntryErrorType
 import coredevices.indexai.data.entity.RecordingEntryStatus
 import coredevices.indexai.database.dao.RecordingEntryDao
 import coredevices.ring.database.Preferences
+import coredevices.ring.BuildKonfig
+import coredevices.ring.database.room.RingDatabase
 import coredevices.mcp.BuiltInMcpTool
 import coredevices.mcp.SessionContext
 import coredevices.mcp.data.ToolCallResult
@@ -26,6 +30,7 @@ import coredevices.ring.storage.RecordingStorage
 import coredevices.ring.util.trace.RingTraceSession
 import coredevices.util.queue.PersistentQueueScheduler
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -59,6 +64,15 @@ class RecordingProcessingQueue(
         private val logger = Logger.withTag("RecordingProcessingQueue")
     }
 
+    override fun canAttempt(task: RecordingProcessingTask): Boolean {
+        val selfHostedCapture = when (val input = task.task) {
+            is ProcessingTask.AudioRecording -> recordingOperationFactory.usesSelfHostedAudio(input.buttonSequence?.parseAsButtonSequence())
+            is ProcessingTask.LocalAudioRecording -> recordingOperationFactory.usesSelfHostedAudio(input.buttonSequence?.parseAsButtonSequence())
+            is ProcessingTask.TextRecording -> BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank() && !isTypedQuestion(input.transcription)
+        }
+        return selfHostedCapture || super.canAttempt(task)
+    }
+
     override suspend fun processTask(task: RecordingProcessingTask) {
         val taskData = task.task
         val stage = task.lastSuccessfulStage?.let { RecordingProcessingStage.fromJson(it) }
@@ -88,6 +102,8 @@ class RecordingProcessingQueue(
             trace.markEvent("recording_preprocessing_start", TraceEventData.TransferIdInfo(transferId ?: -1))
             recordingPreprocessor.preprocess(fileId)
             trace.markEvent("recording_preprocessing_end", TraceEventData.TransferIdInfo(transferId ?: -1))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.e(e) { "Preprocessing failed for file $fileId: ${e.message}, skipping preprocessing" }
         }
@@ -148,13 +164,7 @@ class RecordingProcessingQueue(
         val recordingId = if (handle.stage is RecordingProcessingStage.RecordingEntityCreated) {
             (handle.stage as RecordingProcessingStage.RecordingEntityCreated).recordingEntityId
         } else {
-            val id = recordingRepository.createRecording(
-                firestoreId = IndexDocumentIds.newId(),
-            )
-            handle.updateStage(
-                RecordingProcessingStage.RecordingEntityCreated(id)
-            )
-            id
+            createRecording(handle, if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) task.created else Clock.System.now())
         }
         handleRecording(
             handle,
@@ -181,21 +191,11 @@ class RecordingProcessingQueue(
             ))
             res
         } else {
-            val id = recordingRepository.createRecording(
-                firestoreId = IndexDocumentIds.newId(),
-                localTimestamp = transfer.transferInfo?.buttonPressed?.let { Instant.fromEpochMilliseconds(it) } ?: task.created
-            )
-            queueTaskRepository.updateTaskRecordingId(
-                taskId = handle.taskId,
-                recordingId = id
-            )
+            val id = createRecording(handle, transfer.transferInfo?.buttonPressed?.let { Instant.fromEpochMilliseconds(it) } ?: task.created)
             trace.markEvent("recording_entity_created", TraceEventData.RecordingEntityCreated(
                 recordingId = id,
                 transferId = transferId
             ))
-            handle.updateStage(
-                RecordingProcessingStage.RecordingEntityCreated(id)
-            )
             id
         }
         transferRepository.linkRecordingToTransfer(
@@ -223,13 +223,7 @@ class RecordingProcessingQueue(
         val recordingId = if (handle.stage is RecordingProcessingStage.RecordingEntityCreated) {
             (handle.stage as RecordingProcessingStage.RecordingEntityCreated).recordingEntityId
         } else {
-            val id = recordingRepository.createRecording(
-                firestoreId = IndexDocumentIds.newId(),
-            )
-            handle.updateStage(
-                RecordingProcessingStage.RecordingEntityCreated(id)
-            )
-            id
+            createRecording(handle, if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) task.created else Clock.System.now())
         }
         val operation = recordingOperationFactory.createTextOnlyOperation(
             recordingId = recordingId,
@@ -238,6 +232,19 @@ class RecordingProcessingQueue(
             isQuestion = isTypedQuestion(transcription),
         )
         operation.run(handle)
+    }
+
+    private suspend fun createRecording(handle: TaskHandle, timestamp: Instant): Long {
+        suspend fun create(): Long {
+            val id = recordingRepository.createRecording(IndexDocumentIds.newId(), localTimestamp = timestamp)
+            queueTaskRepository.updateTaskRecordingId(handle.taskId, id)
+            handle.updateStage(RecordingProcessingStage.RecordingEntityCreated(id))
+            return id
+        }
+        if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) return create()
+        return get<RingDatabase>().useWriterConnection {
+            it.withTransaction(Transactor.SQLiteTransactionType.IMMEDIATE) { create() }
+        }
     }
 
     private suspend fun scheduleTask(task: RecordingProcessingTask): Long {

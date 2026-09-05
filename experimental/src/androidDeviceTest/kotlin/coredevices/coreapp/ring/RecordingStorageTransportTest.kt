@@ -71,6 +71,7 @@ class RecordingStorageTransportTest {
         } finally {
             for (variant in listOf(id, "$id-original")) {
                 File(context.cacheDir, "recordings/$variant").delete()
+                File(context.filesDir, "recording-pcm/$variant").delete()
                 File(context.filesDir, "recordings/$variant.m4a").delete()
                 File(context.filesDir, "recordings/$variant.m4a.tmp").delete()
             }

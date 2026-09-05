@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapMerge
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -36,15 +37,16 @@ abstract class PersistentQueueScheduler<T : QueueTask>(
     @OptIn(ExperimentalCoroutinesApi::class)
     private val job = queueActor.flatMapMerge(concurrency = maxConcurrency) { id ->
         flow<Unit> {
+            // Startup replay can overlap a newly scheduled task; only one worker may own its stage.
+            if (id in _activeTaskIds.getAndUpdate { it + id }) return@flow
             try {
                 logger.i { "Processing task with id $id" }
-                _activeTaskIds.update { it + id }
                 val task = repository.getTaskById(id) ?: error("Task with id $id not found")
                 if (task.status != TaskStatus.Pending) {
                     logger.w { "Task with id $id is not pending (status: ${task.status}), skipping" }
                     return@flow
                 }
-                if (task.attempts >= maxAttempts) {
+                if (!canAttempt(task)) {
                     logger.e { "Task with id $id has reached max attempts ($maxAttempts), marking as failed" }
                     repository.updateStatus(id, TaskStatus.Failed)
                     return@flow
@@ -96,6 +98,8 @@ abstract class PersistentQueueScheduler<T : QueueTask>(
     }
 
     abstract suspend fun processTask(task: T)
+
+    protected open fun canAttempt(task: T): Boolean = task.attempts < maxAttempts
 
     override fun close() {
         job.cancel()

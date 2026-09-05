@@ -20,6 +20,9 @@ import coredevices.ring.service.indexfeed.ItemFactory
 import coredevices.ring.service.recordings.RecordingProcessingQueue
 import coredevices.ring.storage.RecordingStorage
 import coredevices.ring.util.trace.RingTraceSession
+import coredevices.ring.BuildKonfig
+import coredevices.ring.selfhosted.capture.SelfHostedAudioRecordingOperation
+import coredevices.ring.selfhosted.capture.SelfHostedTextRecordingOperation
 
 class RecordingOperationFactory(
     private val agentFactory: AgentFactory,
@@ -33,6 +36,10 @@ class RecordingOperationFactory(
     private val itemFactory: ItemFactory,
     private val itemRepository: ItemRepository,
 ) {
+    fun usesSelfHostedAudio(sequence: List<ButtonPress>?): Boolean =
+        BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank() &&
+            gestureRouting.recordingDestinationFor(sequence?.let { RingGesture.forSequence(it) }) != GestureDestination.WebSearch
+
     suspend fun createForButtonSequence(
         recordingId: Long,
         fileId: String,
@@ -40,6 +47,9 @@ class RecordingOperationFactory(
         forcedNoteTool: (suspend (messageText: String, sessionContext: SessionContext) -> ToolCallResult),
         sequence: List<ButtonPress>?
     ): RecordingOperation {
+        if (usesSelfHostedAudio(sequence)) {
+            return SelfHostedAudioRecordingOperation(recordingId, fileId, transferId)
+        }
         val gesture = sequence?.let { RingGesture.forSequence(it) }
         val destination = gestureRouting.recordingDestinationFor(gesture)
         val inner = createForDestination(
@@ -86,6 +96,9 @@ class RecordingOperationFactory(
         forcedTool: (suspend (sessionContext: SessionContext) -> ToolCallResult)?,
         isQuestion: Boolean = false,
     ): RecordingOperation {
+        if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank() && !isQuestion) {
+            return SelfHostedTextRecordingOperation(recordingId, text)
+        }
         // A typed question routes to the search/answer agent and forces no note. Anything else
         // follows wherever Hold & Talk points, so typing stands in for the gesture.
         val destination = gestureRouting.recordingDestinationFor(RingGesture.Hold)

@@ -29,6 +29,7 @@ import org.koin.core.component.get
 import org.koin.core.component.inject
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
+import coredevices.ring.BuildKonfig
 
 class ListenDialogViewModel(private val dismiss: () -> Unit): ViewModel(), KoinComponent {
     companion object {
@@ -58,11 +59,11 @@ class ListenDialogViewModel(private val dismiss: () -> Unit): ViewModel(), KoinC
     fun beginManualRecording() {
         //TODO: Replace with recording operation pattern once we have a way to get the state updates out
         recordingJob = viewModelScope.launch {
-            val mcpSession = mcpSessionFactory.createForSandboxGroup(
+            val mcpSession = if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) null else mcpSessionFactory.createForSandboxGroup(
                 mcpSandboxRepository.getDefaultGroupId(),
                 this
             )
-            mcpSession.openSession()
+            mcpSession?.openSession()
             if (!permissionRequester.hasPermission(Permission.RecordAudio)) {
                 onRecordingError("Microphone permission denied")
                 return@launch
@@ -72,7 +73,11 @@ class ListenDialogViewModel(private val dismiss: () -> Unit): ViewModel(), KoinC
             currentRecorder!!.use { recorder ->
                 onRecordingStarted()
                 val source = recorder.startRecording()
-                val sink = recordingStorage.openRecordingSink(fileName, recorder.sampleRate, "audio/raw")
+                val sink = if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) {
+                    recordingStorage.openOriginalRecordingSink(fileName, recorder.sampleRate, "audio/raw")
+                } else {
+                    recordingStorage.openRecordingSink(fileName, recorder.sampleRate, "audio/raw")
+                }
                 withContext(Dispatchers.IO) {
                     source.use {
                         sink.use {
@@ -82,13 +87,15 @@ class ListenDialogViewModel(private val dismiss: () -> Unit): ViewModel(), KoinC
                 }
                 appScope.launch(Dispatchers.IO) {
                     recordingProcessingQueue.queueLocalAudioProcessing(fileId = fileName)
-                    recordingStorage.persistRecording(fileName)
-                    logger.i { "Persisted recording $fileName" }
+                    if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isBlank()) {
+                        recordingStorage.persistRecording(fileName)
+                        logger.i { "Persisted recording $fileName" }
+                    }
                 }
                 onRecordingCompleted()
             }
             withTimeout(3.seconds) {
-                mcpSession.closeSession()
+                mcpSession?.closeSession()
             }
         }
     }

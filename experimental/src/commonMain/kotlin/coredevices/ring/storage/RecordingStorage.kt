@@ -35,6 +35,8 @@ internal expect fun getRecordingsDataDirectory(): Path
 
 expect fun getFirebaseStorageFile(path: Path): File
 
+class InvalidRecordingCaptureException(message: String) : IllegalArgumentException(message)
+
 /**
  * Access storage for recordings
  */
@@ -267,12 +269,18 @@ class RealRecordingStorage(
             val cachedMetadata = cachedMetadataDao.get(idToMove)
             if (recordingId != null && idToMove != id &&
                 (cachedMetadata == null || !SystemFileSystem.exists(source))) continue
+            if (recordingId != null && (cachedMetadata == null || !SystemFileSystem.exists(source))) {
+                throw InvalidRecordingCaptureException("Local capture $idToMove is missing")
+            }
             requireNotNull(cachedMetadata) { "Cached metadata for recording $idToMove not found" }
             require(SystemFileSystem.exists(source)) {
                 "Recording $idToMove does not exist in cache"
             }
 
             val samples = readPcmFile(source)
+            if (recordingId != null && (samples.isEmpty() || cachedMetadata.sampleRate !in 1..192_000)) {
+                throw InvalidRecordingCaptureException("Local capture $idToMove has invalid audio")
+            }
             uploadRecordingSamples(
                 id = idToMove,
                 sampleRate = cachedMetadata.sampleRate,

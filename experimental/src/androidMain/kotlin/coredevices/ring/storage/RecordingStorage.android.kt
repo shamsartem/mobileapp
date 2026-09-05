@@ -6,10 +6,15 @@ import dev.gitlive.firebase.storage.File
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import org.koin.mp.KoinPlatform
+import coredevices.ring.BuildKonfig
 
 internal actual fun getRecordingsCacheDirectory(): Path {
     val context: Context = KoinPlatform.getKoin().get()
-    val path = Path(context.cacheDir.resolve("recordings").absolutePath)
+    val path = Path(if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) {
+        context.filesDir.resolve("recording-pcm").absolutePath
+    } else {
+        context.cacheDir.resolve("recordings").absolutePath
+    })
     SystemFileSystem.createDirectories(path, false)
     return path
 }

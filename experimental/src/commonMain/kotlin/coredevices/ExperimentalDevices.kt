@@ -78,6 +78,9 @@ class ExperimentalDevices(
             }
         )
         indexSyncRuntime.start()
+        if (coredevices.ring.BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) {
+            org.koin.mp.KoinPlatform.getKoin().get<RecordingProcessingQueue>().resumePendingTasks()
+        }
     }
 
     suspend fun init() {
