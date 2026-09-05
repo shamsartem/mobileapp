@@ -8,6 +8,9 @@ import coredevices.indexai.database.dao.LocalRecordingDao
 import coredevices.indexai.database.dao.RecordingEntryDao
 import coredevices.ring.database.firestore.dao.FirestoreRecordingsDao
 import coredevices.ring.database.room.RingDatabase
+import coredevices.ring.BuildKonfig
+import coredevices.ring.selfhosted.sync.RecordingDeletionMutation
+import coredevices.ring.selfhosted.sync.SelfHostedSyncState
 import co.touchlab.kermit.Logger
 import coredevices.ring.service.RecordingBackgroundScope
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +25,8 @@ class RecordingRepository(
     private val recordingEntryDao: RecordingEntryDao,
     private val firestoreRecordingsDao: FirestoreRecordingsDao,
     private val bgScope: RecordingBackgroundScope,
-    private val db: RingDatabase
+    private val db: RingDatabase,
+    private val selfHostedSyncState: SelfHostedSyncState,
 ) {
     /** Insert a new LocalRecording. [firestoreId] is required and pre-
      *  allocated client-side via
@@ -138,6 +142,16 @@ class RecordingRepository(
     suspend fun deleteRecording(id: Long) {
         withContext(Dispatchers.IO) {
             val rec = localRecordingDao.getRecording(id) ?: return@withContext
+            if (BuildKonfig.SELF_HOSTED_BACKEND_URL.isNotBlank()) {
+                rec.firestoreId?.let { remoteId ->
+                    selfHostedSyncState.addRecordingDeletion(RecordingDeletionMutation(
+                        remoteId,
+                        maxOf(Clock.System.now().toEpochMilliseconds(), rec.updated.toEpochMilliseconds() + 1),
+                    ))
+                }
+                localRecordingDao.deleteRecording(rec)
+                return@withContext
+            }
             localRecordingDao.deleteRecording(rec)
             bgScope.launch(Dispatchers.IO) {
                 rec.firestoreId?.takeIf { it.isNotBlank() }?.let { firestoreId ->
